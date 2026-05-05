@@ -41,7 +41,7 @@ public final class CodeGraphIndex {
             return Optional.empty();
         }
         String normalized = target.trim();
-        if (looksLikePath(normalized)) {
+        if (normalized.endsWith(".java")) {
             Path targetPath = Path.of(normalized).toAbsolutePath().normalize();
             for (CodeGraphSymbol symbol : symbolsByQualifiedName.values()) {
                 if (targetPath.equals(symbol.getFilePath())) {
@@ -59,14 +59,6 @@ public final class CodeGraphIndex {
             return Optional.empty();
         }
         return Optional.of(symbols.get(0));
-    }
-
-    private boolean looksLikePath(String normalized) {
-        if (normalized.contains("\\") || normalized.contains("/")) {
-            return true;
-        }
-        int dot = normalized.lastIndexOf('.');
-        return dot > 0 && dot < normalized.length() - 1;
     }
 
     public List<CodeGraphSymbol> resolveDependencies(CodeGraphSymbol target, int maxDependencies) {
@@ -127,3 +119,4 @@ public final class CodeGraphIndex {
         return candidates.get(0);
     }
 }
+

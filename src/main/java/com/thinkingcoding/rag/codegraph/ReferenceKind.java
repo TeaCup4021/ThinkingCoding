@@ -6,6 +6,7 @@ public enum ReferenceKind {
     FIELD,
     PARAMETER,
     RETURN,
-    THROWS
+    THROWS,
+    CALLS,
+    IMPORTS
 }
-

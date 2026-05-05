@@ -453,8 +453,11 @@ public class AppConfig {
         @JsonProperty("cloudStoreUrl")
         private String cloudStoreUrl;
 
+        @JsonProperty("gitnexus")
+        private GitNexusConfig gitnexus = new GitNexusConfig();
+
         @JsonProperty("codeGraph")
-        private RagCodeGraphConfig codeGraph = new RagCodeGraphConfig();
+        private Map<String, Object> codeGraph = new HashMap<>();
 
         public RagCloudConfig getCloud() {
             if (cloud == null) {
@@ -467,14 +470,25 @@ public class AppConfig {
             this.cloud = cloud;
         }
 
-        public RagCodeGraphConfig getCodeGraph() {
+        public GitNexusConfig getGitnexus() {
+            if (gitnexus == null) {
+                gitnexus = new GitNexusConfig();
+            }
+            return gitnexus;
+        }
+
+        public void setGitnexus(GitNexusConfig gitnexus) {
+            this.gitnexus = gitnexus;
+        }
+
+        public Map<String, Object> getCodeGraph() {
             if (codeGraph == null) {
-                codeGraph = new RagCodeGraphConfig();
+                codeGraph = new HashMap<>();
             }
             return codeGraph;
         }
 
-        public void setCodeGraph(RagCodeGraphConfig codeGraph) {
+        public void setCodeGraph(Map<String, Object> codeGraph) {
             this.codeGraph = codeGraph;
         }
 
@@ -517,73 +531,6 @@ public class AppConfig {
 
         public int getChunkOverlap() { return chunkOverlap; }
         public void setChunkOverlap(int chunkOverlap) { this.chunkOverlap = chunkOverlap; }
-    }
-
-    @Data
-    public static class RagCodeGraphConfig {
-        @JsonProperty("languages")
-        private List<String> languages = new ArrayList<>();
-
-        @JsonProperty("treeSitterEnabled")
-        private boolean treeSitterEnabled = true;
-
-        @JsonProperty("treeSitterCommand")
-        private String treeSitterCommand = "tree-sitter";
-
-        @JsonProperty("includeExtensions")
-        private List<String> includeExtensions = new ArrayList<>();
-
-        @JsonProperty("excludeExtensions")
-        private List<String> excludeExtensions = new ArrayList<>();
-
-        public List<String> getLanguages() {
-            if (languages == null) {
-                languages = new ArrayList<>();
-            }
-            return languages;
-        }
-
-        public void setLanguages(List<String> languages) {
-            this.languages = languages;
-        }
-
-        public boolean isTreeSitterEnabled() {
-            return treeSitterEnabled;
-        }
-
-        public void setTreeSitterEnabled(boolean treeSitterEnabled) {
-            this.treeSitterEnabled = treeSitterEnabled;
-        }
-
-        public String getTreeSitterCommand() {
-            return treeSitterCommand;
-        }
-
-        public void setTreeSitterCommand(String treeSitterCommand) {
-            this.treeSitterCommand = treeSitterCommand;
-        }
-
-        public List<String> getIncludeExtensions() {
-            if (includeExtensions == null) {
-                includeExtensions = new ArrayList<>();
-            }
-            return includeExtensions;
-        }
-
-        public void setIncludeExtensions(List<String> includeExtensions) {
-            this.includeExtensions = includeExtensions;
-        }
-
-        public List<String> getExcludeExtensions() {
-            if (excludeExtensions == null) {
-                excludeExtensions = new ArrayList<>();
-            }
-            return excludeExtensions;
-        }
-
-        public void setExcludeExtensions(List<String> excludeExtensions) {
-            this.excludeExtensions = excludeExtensions;
-        }
     }
 
     @Data
@@ -642,5 +589,51 @@ public class AppConfig {
         public String getEndpoint() { return endpoint; }
         public void setEndpoint(String endpoint) { this.endpoint = endpoint; }
     }
-}
 
+    @Data
+    public static class GitNexusConfig {
+        @JsonProperty("serverName")
+        private String serverName = "gitnexus";
+
+        @JsonProperty("contextTool")
+        private String contextTool = "context";
+
+        @JsonProperty("repo")
+        private String repo;
+
+        @JsonProperty("autoConnect")
+        private boolean autoConnect = true;
+
+        public String getServerName() {
+            return serverName;
+        }
+
+        public void setServerName(String serverName) {
+            this.serverName = serverName;
+        }
+
+        public String getContextTool() {
+            return contextTool;
+        }
+
+        public void setContextTool(String contextTool) {
+            this.contextTool = contextTool;
+        }
+
+        public String getRepo() {
+            return repo;
+        }
+
+        public void setRepo(String repo) {
+            this.repo = repo;
+        }
+
+        public boolean isAutoConnect() {
+            return autoConnect;
+        }
+
+        public void setAutoConnect(boolean autoConnect) {
+            this.autoConnect = autoConnect;
+        }
+    }
+}

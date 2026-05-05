@@ -189,7 +189,7 @@ public class MCPClient {
 
             // 读取并记录所有输出，用于调试
             log.debug("等待MCP服务器响应...");
-            MCPResponse response = readResponse(15000);
+            MCPResponse response = readResponse(getInitTimeoutMillis());
 
             if (response != null) {
                 log.debug("收到初始化响应: {}", response);
@@ -213,7 +213,7 @@ public class MCPClient {
         MCPRequest request = new MCPRequest("tools/list", Map.of());
         sendRequest(request);
 
-        MCPResponse response = readResponse(3000);
+        MCPResponse response = readResponse(getListToolsTimeoutMillis());
         if (response != null && response.getResult() != null) {
             Map<String, Object> result = (Map<String, Object>) response.getResult();
             List<Map<String, Object>> toolsList = (List<Map<String, Object>>) result.get("tools");
@@ -230,6 +230,24 @@ public class MCPClient {
                 }
             }
         }
+    }
+
+    private int getInitTimeoutMillis() {
+        if (isGitNexusServer()) {
+            return 60000;
+        }
+        return 15000;
+    }
+
+    private int getListToolsTimeoutMillis() {
+        if (isGitNexusServer()) {
+            return 20000;
+        }
+        return 3000;
+    }
+
+    private boolean isGitNexusServer() {
+        return serverName != null && serverName.equalsIgnoreCase("gitnexus");
     }
 
     public Object callTool(String toolName, Map<String, Object> arguments) throws IOException {

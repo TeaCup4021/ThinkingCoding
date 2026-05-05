@@ -247,6 +247,7 @@ public class ContextManager {
             context.append("! **关键：你必须输出完整的代码内容在代码块中！**\n\n");
 
             context.append("###  当用户要求修改现有文件时：\n\n");
+            context.append("修改代码前必须先使用 code_graph 工具进行分析，确认影响范围后再决定是否修改。\n");
             context.append("这时才需要先读取文件：\n");
             context.append("1. 使用 `file_manager(command=\"read\", path)` 读取现有内容\n");
             context.append("2. 等待系统返回文件内容\n");
@@ -726,4 +727,6 @@ public class ContextManager {
         return availableSkills;
     }
 }
+
+
 

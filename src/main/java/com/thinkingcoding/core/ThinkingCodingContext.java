@@ -98,12 +98,12 @@ public class ThinkingCodingContext {
         }
 
         if (appConfig.getTools().getCodeGraph().isEnabled()) {
-            toolRegistry.register(new CodeGraphTool(appConfig));
+            toolRegistry.register(new CodeGraphTool(appConfig, mcpService));
         }
 
         // 🔥 初始化 MCP 服务（如果启用）
         if (mcpConfig != null && mcpConfig.isEnabled()) {
-            initializeMCPTools(mcpConfig, mcpService, toolRegistry);
+            initializeMCPTools(appConfig, mcpConfig, mcpService, toolRegistry);
         }
 
         // 服务层初始化
@@ -145,7 +145,7 @@ public class ThinkingCodingContext {
     /**
      * 🔥 初始化 MCP 工具
      */
-    public static void initializeMCPTools(MCPConfig mcpConfig, MCPService mcpService, ToolRegistry toolRegistry) {
+    public static void initializeMCPTools(AppConfig appConfig, MCPConfig mcpConfig, MCPService mcpService, ToolRegistry toolRegistry) {
         // 🔥 简化输出：只在最后显示汇总信息
 
         if (mcpConfig != null && mcpConfig.isEnabled()) {
@@ -417,4 +417,3 @@ public class ThinkingCodingContext {
         }
     }
 }
-

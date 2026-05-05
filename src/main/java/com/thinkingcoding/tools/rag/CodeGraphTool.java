@@ -5,23 +5,18 @@ import com.thinkingcoding.config.AppConfig;
 import com.thinkingcoding.model.ToolResult;
 import com.thinkingcoding.rag.codegraph.CodeGraphIndex;
 import com.thinkingcoding.rag.codegraph.CodeGraphSymbol;
-import com.thinkingcoding.rag.codegraph.IndexOptions;
-import com.thinkingcoding.rag.codegraph.JavaAstIndexer;
-import com.thinkingcoding.rag.codegraph.MultiLanguageAstIndexer;
 import com.thinkingcoding.rag.codegraph.ReferenceKind;
-import com.thinkingcoding.rag.codegraph.TreeSitterCliAstIndexer;
 import com.thinkingcoding.tools.BaseTool;
+import com.thinkingcoding.mcp.MCPService;
+import com.thinkingcoding.rag.codegraph.GitNexusCodeGraphMapper;
+import com.thinkingcoding.rag.codegraph.GitNexusCodeGraphMapper.GitNexusMappingResult;
 
 import java.nio.file.Path;
 import java.util.ArrayList;
-import java.util.Collections;
 import java.util.EnumSet;
 import java.util.LinkedHashMap;
-import java.util.LinkedHashSet;
 import java.util.List;
-import java.util.Locale;
 import java.util.Map;
-import java.util.Set;
 
 public class CodeGraphTool extends BaseTool {
     private static final long DEFAULT_MAX_FILE_BYTES = 2 * 1024 * 1024;
@@ -29,24 +24,25 @@ public class CodeGraphTool extends BaseTool {
     private static final int DEFAULT_MAX_MEMBERS = 12;
 
     private final AppConfig appConfig;
+    private final MCPService mcpService;
     private final ObjectMapper mapper = new ObjectMapper();
-    private final MultiLanguageAstIndexer indexer = new MultiLanguageAstIndexer();
+    private final GitNexusCodeGraphMapper graphMapper = new GitNexusCodeGraphMapper();
 
-    private CodeGraphIndex cachedIndex;
-    private Path cachedRoot;
-    private boolean cachedIncludeTests;
-
-    public CodeGraphTool(AppConfig appConfig) {
-        super("code_graph", "Build and query a lightweight code graph across Java source files");
+    public CodeGraphTool(AppConfig appConfig, MCPService mcpService) {
+        super("code_graph", "Build and query a lightweight code graph via GitNexus MCP");
         this.appConfig = appConfig;
-        this.indexer.register(new JavaAstIndexer());
-        this.indexer.register(new TreeSitterCliAstIndexer());
+        this.mcpService = mcpService;
     }
 
     @Override
     public ToolResult execute(String input) {
         long startTime = System.currentTimeMillis();
         try {
+            if (mcpService == null) {
+                return error("MCP service is not available. Ensure GitNexus MCP is configured and enabled.",
+                        System.currentTimeMillis() - startTime);
+            }
+
             Map<String, Object> params = parseParams(input);
             String target = stringParam(params, "target", null);
             if (target == null || target.isBlank()) {
@@ -58,14 +54,17 @@ public class CodeGraphTool extends BaseTool {
             boolean includeTests = booleanParam(params, "includeTests", false);
             int maxDependencies = intParam(params, "maxDependencies", DEFAULT_MAX_DEPENDENCIES);
             int maxMembers = intParam(params, "maxMembers", DEFAULT_MAX_MEMBERS);
+            String repo = stringParam(params, "repo", resolveGitNexusRepo());
 
-            CodeGraphIndex index = getIndex(Path.of(workspace), includeTests, refresh);
-            var targetSymbol = index.findTarget(target);
-            if (targetSymbol.isEmpty()) {
-                return error("Target not found in code graph: " + target, System.currentTimeMillis() - startTime);
+            Object response = callGitNexus(target, repo, includeTests, refresh);
+            GitNexusMappingResult mapping = graphMapper.map(Path.of(workspace), target, response);
+            CodeGraphSymbol targetSymbol = mapping.getTarget();
+            if (targetSymbol == null) {
+                return error("Target not found in GitNexus response: " + target,
+                        System.currentTimeMillis() - startTime);
             }
 
-            String output = render(targetSymbol.get(), index, maxDependencies, maxMembers);
+            String output = render(targetSymbol, mapping.getIndex(), maxDependencies, maxMembers);
             return success(output, System.currentTimeMillis() - startTime);
         } catch (Exception e) {
             return error("Code graph lookup failed: " + e.getMessage(), System.currentTimeMillis() - startTime);
@@ -86,13 +85,14 @@ public class CodeGraphTool extends BaseTool {
     public Object getInputSchema() {
         Map<String, Object> schema = new LinkedHashMap<>();
         schema.put("type", "object");
-        schema.put("description", "Query the Java code graph for a target class or file");
+        schema.put("description", "Query the code graph via GitNexus MCP for a target symbol");
 
         Map<String, Object> properties = new LinkedHashMap<>();
-        properties.put("target", field("string", "Target class name, qualified name, or .java file path"));
+        properties.put("target", field("string", "Target symbol name or file path"));
         properties.put("workspace", field("string", "Workspace root; defaults to rag.workspace or user.dir"));
-        properties.put("refresh", field("boolean", "Rebuild the index before querying"));
-        properties.put("includeTests", field("boolean", "Include src/test/java in the index"));
+        properties.put("repo", field("string", "GitNexus repo name; defaults to rag.gitnexus.repo"));
+        properties.put("refresh", field("boolean", "Request GitNexus to refresh the index if supported"));
+        properties.put("includeTests", field("boolean", "Include tests in GitNexus queries if supported"));
         properties.put("maxDependencies", field("integer", "Maximum dependency symbols to return"));
         properties.put("maxMembers", field("integer", "Maximum public members per symbol"));
 
@@ -118,67 +118,58 @@ public class CodeGraphTool extends BaseTool {
         return fallback;
     }
 
+    private Object callGitNexus(String target, String repo, boolean includeTests, boolean refresh) {
+        String serverName = resolveGitNexusServer();
+        String toolName = resolveGitNexusTool();
+
+        Map<String, Object> arguments = new LinkedHashMap<>();
+        arguments.put("name", target);
+        arguments.put("target", target);
+        if (repo != null && !repo.isBlank()) {
+            arguments.put("repo", repo);
+        }
+        if (includeTests) {
+            arguments.put("includeTests", true);
+        }
+        if (refresh) {
+            arguments.put("refresh", true);
+        }
+
+        return mcpService.callTool(serverName, toolName, arguments);
+    }
+
+    private String resolveGitNexusServer() {
+        if (appConfig != null && appConfig.getRag() != null && appConfig.getRag().getGitnexus() != null) {
+            String server = appConfig.getRag().getGitnexus().getServerName();
+            if (server != null && !server.isBlank()) {
+                return server;
+            }
+        }
+        return "gitnexus";
+    }
+
+    private String resolveGitNexusTool() {
+        if (appConfig != null && appConfig.getRag() != null && appConfig.getRag().getGitnexus() != null) {
+            String tool = appConfig.getRag().getGitnexus().getContextTool();
+            if (tool != null && !tool.isBlank()) {
+                return tool;
+            }
+        }
+        return "context";
+    }
+
+    private String resolveGitNexusRepo() {
+        if (appConfig != null && appConfig.getRag() != null && appConfig.getRag().getGitnexus() != null) {
+            return appConfig.getRag().getGitnexus().getRepo();
+        }
+        return null;
+    }
+
     private String resolveWorkspace() {
         if (appConfig != null && appConfig.getRag() != null && appConfig.getRag().getWorkspace() != null) {
             return appConfig.getRag().getWorkspace();
         }
         return System.getProperty("user.dir");
-    }
-
-    private synchronized CodeGraphIndex getIndex(Path workspace, boolean includeTests, boolean refresh) {
-        Path root = workspace.toAbsolutePath().normalize();
-        if (!refresh && cachedIndex != null && root.equals(cachedRoot) && cachedIncludeTests == includeTests) {
-            return cachedIndex;
-        }
-        IndexOptions options = buildIndexOptions(includeTests);
-        CodeGraphIndex index = indexer.indexWorkspace(root, options);
-        cachedIndex = index;
-        cachedRoot = root;
-        cachedIncludeTests = includeTests;
-        return index;
-    }
-
-    private IndexOptions buildIndexOptions(boolean includeTests) {
-        long maxFileSizeBytes = DEFAULT_MAX_FILE_BYTES;
-        if (appConfig != null && appConfig.getTools() != null && appConfig.getTools().getCodeGraph() != null) {
-            Long configured = appConfig.getTools().getCodeGraph().getMaxFileSize();
-            if (configured != null && configured > 0) {
-                maxFileSizeBytes = configured;
-            }
-        }
-        Set<String> languages = readLanguages();
-        AppConfig.RagCodeGraphConfig graphConfig = appConfig == null ? null : appConfig.getRag().getCodeGraph();
-        boolean treeSitterEnabled = graphConfig == null || graphConfig.isTreeSitterEnabled();
-        String treeSitterCommand = graphConfig == null ? null : graphConfig.getTreeSitterCommand();
-        Set<String> includeExtensions = toLowerSet(graphConfig == null ? null : graphConfig.getIncludeExtensions());
-        Set<String> excludeExtensions = toLowerSet(graphConfig == null ? null : graphConfig.getExcludeExtensions());
-        if (!excludeExtensions.contains(".java")) {
-            excludeExtensions = new LinkedHashSet<>(excludeExtensions);
-            excludeExtensions.add(".java");
-            excludeExtensions = Collections.unmodifiableSet(excludeExtensions);
-        }
-        return new IndexOptions(includeTests, maxFileSizeBytes, languages, treeSitterEnabled, treeSitterCommand,
-                includeExtensions, excludeExtensions);
-    }
-
-    private Set<String> readLanguages() {
-        if (appConfig == null || appConfig.getRag() == null || appConfig.getRag().getCodeGraph() == null) {
-            return Collections.emptySet();
-        }
-        return toLowerSet(appConfig.getRag().getCodeGraph().getLanguages());
-    }
-
-    private Set<String> toLowerSet(List<String> values) {
-        if (values == null || values.isEmpty()) {
-            return Collections.emptySet();
-        }
-        Set<String> normalized = new LinkedHashSet<>();
-        for (String value : values) {
-            if (value != null && !value.isBlank()) {
-                normalized.add(value.trim().toLowerCase(Locale.ROOT));
-            }
-        }
-        return Collections.unmodifiableSet(normalized);
     }
 
     private String render(CodeGraphSymbol target,
@@ -187,9 +178,6 @@ public class CodeGraphTool extends BaseTool {
                           int maxMembers) {
         StringBuilder sb = new StringBuilder();
         sb.append("Target: ").append(target.getQualifiedName()).append(" (" + target.getKind() + ")\n");
-        if (target.getLanguage() != null && !target.getLanguage().isBlank()) {
-            sb.append("Language: ").append(target.getLanguage()).append("\n");
-        }
         sb.append("File: ").append(target.getFilePath()).append("\n");
         if (target.getDeclaration() != null && !target.getDeclaration().isBlank()) {
             sb.append("Declaration: ").append(target.getDeclaration()).append("\n");
@@ -280,4 +268,3 @@ public class CodeGraphTool extends BaseTool {
         }
     }
 }
-

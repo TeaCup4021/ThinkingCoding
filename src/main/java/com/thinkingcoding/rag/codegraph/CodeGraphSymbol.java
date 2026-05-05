@@ -21,7 +21,6 @@ public final class CodeGraphSymbol {
     private final List<String> publicMembers;
     private final List<String> publicFields;
     private final Map<String, EnumSet<ReferenceKind>> referenceKinds;
-    private final String language;
 
     public CodeGraphSymbol(String name,
                            String qualifiedName,
@@ -31,8 +30,7 @@ public final class CodeGraphSymbol {
                            String declaration,
                            List<String> publicMembers,
                            List<String> publicFields,
-                           Map<String, EnumSet<ReferenceKind>> referenceKinds,
-                           String language) {
+                           Map<String, EnumSet<ReferenceKind>> referenceKinds) {
         this.name = name;
         this.qualifiedName = qualifiedName;
         this.packageName = packageName;
@@ -42,7 +40,6 @@ public final class CodeGraphSymbol {
         this.publicMembers = new ArrayList<>(publicMembers);
         this.publicFields = new ArrayList<>(publicFields);
         this.referenceKinds = new LinkedHashMap<>(referenceKinds);
-        this.language = language;
     }
 
     public String getName() {
@@ -80,8 +77,6 @@ public final class CodeGraphSymbol {
     public Map<String, EnumSet<ReferenceKind>> getReferenceKinds() {
         return Collections.unmodifiableMap(referenceKinds);
     }
-
-    public String getLanguage() {
-        return language;
-    }
 }
+
+

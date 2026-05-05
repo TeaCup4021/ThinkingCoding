@@ -27,7 +27,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.stream.Stream;
 
-public final class JavaAstIndexer implements LanguageAstIndexer {
+public final class JavaAstIndexer {
     private static final Set<String> EXCLUDED_PACKAGES = new HashSet<>(Arrays.asList(
             "java.", "javax.", "jakarta.", "org.junit.", "org.mockito.", "lombok.", "org.slf4j."
     ));
@@ -45,19 +45,9 @@ public final class JavaAstIndexer implements LanguageAstIndexer {
         this.parser = new JavaParser(configuration);
     }
 
-    @Override
-    public String getLanguage() {
-        return "java";
-    }
-
-    @Override
-    public Set<String> getFileExtensions() {
-        return Set.of(".java");
-    }
-
-    @Override
-    public void indexWorkspace(Path workspaceRoot, IndexOptions options, CodeGraphIndex index) {
+    public CodeGraphIndex indexWorkspace(Path workspaceRoot, IndexOptions options) {
         Path root = workspaceRoot.toAbsolutePath().normalize();
+        CodeGraphIndex index = new CodeGraphIndex(root);
         List<Path> roots = resolveRoots(root, options);
 
         for (Path sourceRoot : roots) {
@@ -72,6 +62,7 @@ public final class JavaAstIndexer implements LanguageAstIndexer {
                 // Skip unreadable roots.
             }
         }
+        return index;
     }
 
     private List<Path> resolveRoots(Path workspaceRoot, IndexOptions options) {
@@ -164,7 +155,7 @@ public final class JavaAstIndexer implements LanguageAstIndexer {
         }
 
         return new CodeGraphSymbol(name, qualifiedName, packageName, path.toAbsolutePath().normalize(),
-                kind, declarationLine, publicMembers, publicFields, references, getLanguage());
+                kind, declarationLine, publicMembers, publicFields, references);
     }
 
     private CodeGraphSymbol buildFromEnum(EnumDeclaration declaration, String packageName, Path path) {
@@ -172,7 +163,7 @@ public final class JavaAstIndexer implements LanguageAstIndexer {
         String qualifiedName = qualify(packageName, name);
         String declarationLine = formatEnumDeclaration(declaration);
         return new CodeGraphSymbol(name, qualifiedName, packageName, path.toAbsolutePath().normalize(),
-                SymbolKind.ENUM, declarationLine, List.of(), List.of(), Map.of(), getLanguage());
+                SymbolKind.ENUM, declarationLine, List.of(), List.of(), Map.of());
     }
 
     private CodeGraphSymbol buildFromRecord(RecordDeclaration declaration,
@@ -185,7 +176,7 @@ public final class JavaAstIndexer implements LanguageAstIndexer {
         Map<String, EnumSet<ReferenceKind>> references = new LinkedHashMap<>();
         declaration.getParameters().forEach(param -> addReference(param.getType(), imports, references, ReferenceKind.PARAMETER));
         return new CodeGraphSymbol(name, qualifiedName, packageName, path.toAbsolutePath().normalize(),
-                SymbolKind.RECORD, declarationLine, List.of(), List.of(), references, getLanguage());
+                SymbolKind.RECORD, declarationLine, List.of(), List.of(), references);
     }
 
     private void addReference(Type type, ImportContext imports,

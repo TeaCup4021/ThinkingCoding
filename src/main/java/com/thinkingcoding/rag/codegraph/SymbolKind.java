@@ -4,6 +4,6 @@ public enum SymbolKind {
     CLASS,
     INTERFACE,
     ENUM,
-    RECORD,
-    MODULE
+    RECORD
 }
+
