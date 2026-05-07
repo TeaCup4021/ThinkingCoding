@@ -789,5 +789,15 @@ public class AgentLoop {
     public String getSessionId() {
         return sessionId;
     }
+
+    /** 处理 Steering 命令，V1 不支持，始终返回 false。 */
+    public boolean handleSteeringCommand(String input) {
+        return false;
+    }
+
+    /** 返回版本标识 */
+    public String getVersion() {
+        return "legacy";
+    }
 }
 

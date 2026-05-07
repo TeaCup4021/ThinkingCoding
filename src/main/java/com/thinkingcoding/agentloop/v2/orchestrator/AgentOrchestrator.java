@@ -127,9 +127,6 @@ public class AgentOrchestrator {
                 return;
             }
 
-                        refreshTodoFromPlan(turn, planResult.getToolCalls());
-                        appendPlanSummary(turn, planResult);
-
             // AI 文本显示由 AgentEventSink 统一处理（支持流式与收尾）。
 
             // 如果有选项，显示提示
@@ -137,13 +134,40 @@ public class AgentOrchestrator {
                 // OptionManager 已在 Planner 中处理
             }
 
-            // ===== Phase 2 & 3: Execute + ReAct with Steering =====
-            // 如果规划结果中包含工具调用，则进入执行阶段
+            // ===== Plan 确认环节 =====
+            // 如果规划结果中包含工具调用，先展示计划让用户确认，再进入执行阶段
             if (planResult.hasToolCalls()) {
-                context.getUi().displayInfo("\n🔧 检测到工具调用，开始执行...");
+                // 展示计划摘要
+                String planSummary = formatPlanSummary(planResult);
+                if (!planSummary.isBlank()) {
+                    context.getUi().displayInfo("\n" + planSummary);
+                }
 
-                // 启动 ReAct 驱动器，执行工具调用序列
-                // ReAct 模式会循环执行：执行工具 → 观察结果 → 反思续跑
+                // 非自动批准模式下询问用户确认
+                if (!confirmationPolicy.isAutoApprove()) {
+                    boolean confirmed = askUserPlanConfirmation();
+                    if (!confirmed) {
+                        context.getUi().displayWarning("⚠️  计划已取消，请重新描述你的需求");
+                        history.add(new ChatMessage("system",
+                                "用户取消了此计划。请等待用户重新描述需求。"));
+                        sessionGateway.save(sessionId, history);
+                        return;
+                    }
+                }
+
+                // 用户确认 → 生成 TODO 并记入历史
+                refreshTodoFromPlan(turn, planResult.getToolCalls());
+                String todoSummary = formatTodoSummary(turn);
+                if (!todoSummary.isBlank()) {
+                    context.getUi().displayInfo("\n" + todoSummary);
+                    history.add(new ChatMessage("system", todoSummary));
+                }
+                if (!planSummary.isBlank()) {
+                    history.add(new ChatMessage("system", planSummary));
+                }
+
+                // ===== Phase 2 & 3: Execute + ReAct with Steering =====
+                context.getUi().displayInfo("\n🔧 开始执行...");
                 ExecuteReactResult executeResult = reactDriver.run(
                         turn,
                         planResult,
@@ -159,6 +183,12 @@ public class AgentOrchestrator {
                 } else if (executeResult.hasExecutions()) {
                     context.getUi().displaySuccess("\n✅ 执行完成，共 " + executeResult.getSteps() + " 步");
                 }
+            } else {
+                // 无工具调用的纯文本回复，仅记入历史
+                String planSummary = formatPlanSummary(planResult);
+                if (!planSummary.isBlank()) {
+                    history.add(new ChatMessage("system", planSummary));
+                }
             }
 
             // 保存会话
@@ -169,6 +199,53 @@ public class AgentOrchestrator {
             e.printStackTrace();
         }
     }
+
+    // ===== 与 Legacy AgentLoop 对齐的方法名，便于 CLI 统一调用 =====
+
+    /** @see #onUserInput(String) */
+    public void processInput(String input) {
+        onUserInput(input);
+    }
+
+    /** @see #snapshotHistory() */
+    public List<ChatMessage> getHistory() {
+        return snapshotHistory();
+    }
+
+    /**
+     * 处理 Steering 命令（字符串形式，由 CLI 直接调用）。
+     * @return true 表示命令已处理
+     */
+    public boolean handleSteeringCommand(String input) {
+        String command = input.toLowerCase();
+        switch (command) {
+            case "/stop":
+                onSteeringCommand(SteeringCommand.STOP_GENERATION);
+                context.getUi().displayInfo("⏸️  已停止生成");
+                return true;
+            case "/cancel":
+                onSteeringCommand(SteeringCommand.CANCEL_TURN);
+                context.getUi().displayInfo("⚠️  回合已取消");
+                return true;
+            case "/auto-approve-on":
+                setAutoApprove(true);
+                context.getUi().displaySuccess("✅ Auto-approve 已开启");
+                return true;
+            case "/auto-approve-off":
+                setAutoApprove(false);
+                context.getUi().displaySuccess("✅ Auto-approve 已关闭");
+                return true;
+            default:
+                return false;
+        }
+    }
+
+    /** 返回版本标识 */
+    public String getVersion() {
+        return "v2";
+    }
+
+    // ===== 原有方法 =====
 
     /**
      * 处理 Steering 命令
@@ -230,17 +307,14 @@ public class AgentOrchestrator {
         return sessionId;
     }
 
-    private void appendPlanSummary(TurnContext turn, PlanResult planResult) {
-        String planSummary = formatPlanSummary(planResult);
-        if (!planSummary.isBlank()) {
-            context.getUi().displayInfo("\n" + planSummary);
-            history.add(new ChatMessage("system", planSummary));
-        }
-
-        String todoSummary = formatTodoSummary(turn);
-        if (!todoSummary.isBlank()) {
-            context.getUi().displayInfo("\n" + todoSummary);
-            history.add(new ChatMessage("system", todoSummary));
+    private boolean askUserPlanConfirmation() {
+        try {
+            String response = context.getUi().getLineReader().readLine(
+                    "\n是否按此计划执行？ [y/n]: ");
+            return response != null && (response.trim().equalsIgnoreCase("y")
+                    || response.trim().equalsIgnoreCase("yes"));
+        } catch (Exception e) {
+            return false;
         }
     }
 

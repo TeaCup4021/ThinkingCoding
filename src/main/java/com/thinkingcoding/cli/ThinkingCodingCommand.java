@@ -182,9 +182,9 @@ public class ThinkingCodingCommand implements Callable<Integer> {
                     ChatMessage userMessage = new ChatMessage("user", prompt);
                     ui.displayUserMessage(userMessage);
 
-                    // 🔥 处理AI响应，根据版本选择不同方法
-                    if ("v2".equalsIgnoreCase(agentLoopVersion) && currentAgentOrchestrator != null) {
-                        currentAgentOrchestrator.onUserInput(prompt);
+                    // 处理AI响应（版本已在 createAgentLoop 中确定）
+                    if (currentAgentOrchestrator != null) {
+                        currentAgentOrchestrator.processInput(prompt);
                     } else {
                         currentAgentLoop.processInput(prompt);
                     }
@@ -258,8 +258,7 @@ public class ThinkingCodingCommand implements Callable<Integer> {
     }
 
     private Integer startInteractiveMode(ThinkingCodingUI ui) {
-        // 🔥 显示当前使用的 AgentLoop 版本
-        if ("v2".equalsIgnoreCase(agentLoopVersion)) {
+        if (currentAgentOrchestrator != null) {
             ui.displaySuccess("✅ AgentLoop V2 已启用");
             ui.displayInfo("   架构: Plan → Execute + ReAct → Steering");
             ui.displayInfo("   - Auto Approve: " + (autoApprove ? "ON" : "OFF"));
@@ -309,11 +308,9 @@ public class ThinkingCodingCommand implements Callable<Integer> {
                     continue;
                 }
 
-                // 🔥 V2 Steering 命令
-                if ("v2".equalsIgnoreCase(agentLoopVersion) && currentAgentOrchestrator != null) {
-                    if (handleV2SteeringCommand(trimmedInput)) {
-                        continue;
-                    }
+                // Steering 命令（V2 支持，V1 返回 false）
+                if (currentAgentOrchestrator != null && currentAgentOrchestrator.handleSteeringCommand(trimmedInput)) {
+                    continue;
                 }
 
                 // 🔧 直接命令帮助
@@ -340,9 +337,9 @@ public class ThinkingCodingCommand implements Callable<Integer> {
                     continue;
                 }
 
-                // 🔥 处理普通对话，根据版本选择不同方法
-                if ("v2".equalsIgnoreCase(agentLoopVersion) && currentAgentOrchestrator != null) {
-                    currentAgentOrchestrator.onUserInput(trimmedInput);
+                // 处理普通对话（版本已在 createAgentLoop 中确定）
+                if (currentAgentOrchestrator != null) {
+                    currentAgentOrchestrator.processInput(trimmedInput);
                 } else {
                     currentAgentLoop.processInput(trimmedInput);
                 }
@@ -389,47 +386,6 @@ public class ThinkingCodingCommand implements Callable<Integer> {
             // 使用 Legacy
             currentAgentLoop = new AgentLoop(context, currentSessionId, modelToUse);
             currentAgentLoop.loadHistory(history);
-        }
-    }
-
-    /**
-     * 🔥 处理 V2 Steering 命令
-     */
-    private boolean handleV2SteeringCommand(String input) {
-        if (currentAgentOrchestrator == null) {
-            return false;
-        }
-        
-        String command = input.toLowerCase();
-        ThinkingCodingUI ui = context.getUi();
-        
-        switch (command) {
-            case "/stop":
-                currentAgentOrchestrator.onSteeringCommand(
-                    com.thinkingcoding.agentloop.v2.steer.SteeringCommand.STOP_GENERATION
-                );
-                ui.displayInfo("⏸️  已停止生成");
-                return true;
-                
-            case "/cancel":
-                currentAgentOrchestrator.onSteeringCommand(
-                    com.thinkingcoding.agentloop.v2.steer.SteeringCommand.CANCEL_TURN
-                );
-                ui.displayInfo("⚠️  回合已取消");
-                return true;
-                
-            case "/auto-approve-on":
-                currentAgentOrchestrator.setAutoApprove(true);
-                ui.displaySuccess("✅ Auto-approve 已开启");
-                return true;
-                
-            case "/auto-approve-off":
-                currentAgentOrchestrator.setAutoApprove(false);
-                ui.displaySuccess("✅ Auto-approve 已关闭");
-                return true;
-                
-            default:
-                return false;  // 不是 steering 命令
         }
     }
 
@@ -608,8 +564,7 @@ public class ThinkingCodingCommand implements Callable<Integer> {
                                 !msg.getContent().trim().isEmpty())
                         .collect(Collectors.toList());
     
-                // 🔥 根据版本加载历史
-                if ("v2".equalsIgnoreCase(agentLoopVersion) && currentAgentOrchestrator != null) {
+                if (currentAgentOrchestrator != null) {
                     currentAgentOrchestrator.loadHistory(filteredHistory);
                 } else if (currentAgentLoop != null) {
                     currentAgentLoop.loadHistory(filteredHistory);
@@ -636,8 +591,7 @@ public class ThinkingCodingCommand implements Callable<Integer> {
         try {
             List<ChatMessage> history = context.getSessionService().loadSession(sessionId);
                 
-            // 🔥 根据版本加载历史
-            if ("v2".equalsIgnoreCase(agentLoopVersion) && currentAgentOrchestrator != null) {
+            if (currentAgentOrchestrator != null) {
                 currentAgentOrchestrator.loadHistory(history);
             } else if (currentAgentLoop != null) {
                 currentAgentLoop.loadHistory(history);
@@ -658,9 +612,8 @@ public class ThinkingCodingCommand implements Callable<Integer> {
         try {
             ui.displayUserMessage(new ChatMessage("user", prompt));
                 
-            // 🔥 根据版本处理
-            if ("v2".equalsIgnoreCase(agentLoopVersion) && currentAgentOrchestrator != null) {
-                currentAgentOrchestrator.onUserInput(prompt);
+            if (currentAgentOrchestrator != null) {
+                currentAgentOrchestrator.processInput(prompt);
             } else if (currentAgentLoop != null) {
                 currentAgentLoop.processInput(prompt);
             }
