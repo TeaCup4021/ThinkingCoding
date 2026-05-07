@@ -85,12 +85,13 @@ public final class GitNexusCodeGraphMapper {
                 asString(map.get("name")),
                 asString(map.get("symbol")),
                 extractNameFromUid(asString(map.get("uid"))),
+                extractNameFromUid(asString(map.get("id"))),
                 asString(map.get("qualifiedName"))
         );
         if (name == null) {
             return null;
         }
-        String qualified = firstNonBlank(asString(map.get("qualifiedName")), asString(map.get("uid")), name);
+        String qualified = firstNonBlank(asString(map.get("qualifiedName")), asString(map.get("uid")), asString(map.get("id")), name);
         String filePath = firstNonBlank(asString(map.get("filePath")), asString(map.get("path")));
         String kind = asString(map.get("kind"));
         return new DependencyInfo(name, qualified, filePath, kind);
@@ -103,9 +104,10 @@ public final class GitNexusCodeGraphMapper {
         String name = firstNonBlank(
                 asString(symbolMap.get("name")),
                 extractNameFromUid(asString(symbolMap.get("uid"))),
+                extractNameFromUid(asString(symbolMap.get("id"))),
                 target
         );
-        String qualified = firstNonBlank(asString(symbolMap.get("qualifiedName")), asString(symbolMap.get("uid")), name);
+        String qualified = firstNonBlank(asString(symbolMap.get("qualifiedName")), asString(symbolMap.get("uid")), asString(symbolMap.get("id")), name);
         String filePath = firstNonBlank(asString(symbolMap.get("filePath")), asString(symbolMap.get("path")), asString(symbolMap.get("file")));
         Path resolvedPath = resolveFilePath(workspaceRoot, filePath, target);
         String declaration = firstNonBlank(
@@ -215,9 +217,40 @@ public final class GitNexusCodeGraphMapper {
         if (response == null) {
             return Collections.emptyMap();
         }
-        if (response instanceof Map<?, ?> map) {
-            return castMap(map);
+
+        // Handle MCP response where callTool directly returns "content" List
+        if (response instanceof List<?> contentList && !contentList.isEmpty()) {
+            Object first = contentList.get(0);
+            if (first instanceof Map<?, ?> firstMap) {
+                Object textObj = firstMap.get("text");
+                if (textObj instanceof String text && text.trim().startsWith("{")) {
+                    try {
+                        return mapper.readValue(text, Map.class);
+                    } catch (Exception ignored) {
+                    }
+                }
+            }
+            return Collections.emptyMap();
         }
+
+        // Unwrap MCP response if it contains "content"
+        if (response instanceof Map<?, ?> rawMap) {
+            Object contentObj = rawMap.get("content");
+            if (contentObj instanceof List<?> contentList && !contentList.isEmpty()) {
+                Object first = contentList.get(0);
+                if (first instanceof Map<?, ?> firstMap) {
+                    Object textObj = firstMap.get("text");
+                    if (textObj instanceof String text && text.trim().startsWith("{")) {
+                        try {
+                            return mapper.readValue(text, Map.class);
+                        } catch (Exception ignored) {
+                        }
+                    }
+                }
+            }
+            return castMap(rawMap);
+        }
+
         if (response instanceof String text && text.trim().startsWith("{")) {
             try {
                 return mapper.readValue(text, Map.class);

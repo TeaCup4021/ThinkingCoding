@@ -23,6 +23,9 @@ public class TurnContext {
     /** 运行ID，唯一标识本次回合执行，用于追踪和调试 */
     private final String runId;
 
+    /** 结构化 TODO 跟踪器，用于复杂任务的规划状态 */
+    private final TodoTracker todoTracker = new TodoTracker();
+
     public TurnContext(String sessionId, String modelName, List<ChatMessage> history, int turnIndex) {
         this.sessionId = sessionId;
         this.modelName = modelName;
@@ -53,5 +56,9 @@ public class TurnContext {
 
     public String getRunId() {
         return runId;
+    }
+
+    public TodoTracker getTodoTracker() {
+        return todoTracker;
     }
 }

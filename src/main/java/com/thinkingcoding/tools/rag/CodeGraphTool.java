@@ -17,6 +17,7 @@ import java.util.EnumSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Locale;
 
 public class CodeGraphTool extends BaseTool {
     private static final long DEFAULT_MAX_FILE_BYTES = 2 * 1024 * 1024;
@@ -57,11 +58,19 @@ public class CodeGraphTool extends BaseTool {
             String repo = stringParam(params, "repo", resolveGitNexusRepo());
 
             Object response = callGitNexus(target, repo, includeTests, refresh);
+            System.err.println("DEBUG gitnexus response: " + response + " (class: " + (response != null ? response.getClass() : "null") + ")");
             GitNexusMappingResult mapping = graphMapper.map(Path.of(workspace), target, response);
             CodeGraphSymbol targetSymbol = mapping.getTarget();
             if (targetSymbol == null) {
-                return error("Target not found in GitNexus response: " + target,
-                        System.currentTimeMillis() - startTime);
+                GitNexusQueryCandidate candidate = resolveCandidateFromQuery(target, repo, includeTests);
+                if (candidate != null) {
+                    Object fallbackResponse = callGitNexus(candidate.getLookupKey(), repo, includeTests, refresh);
+                    mapping = graphMapper.map(Path.of(workspace), candidate.getLookupKey(), fallbackResponse);
+                    targetSymbol = mapping.getTarget();
+                }
+            }
+            if (targetSymbol == null) {
+                return error(buildTargetNotFoundMessage(target), System.currentTimeMillis() - startTime);
             }
 
             String output = render(targetSymbol, mapping.getIndex(), maxDependencies, maxMembers);
@@ -265,6 +274,172 @@ public class CodeGraphTool extends BaseTool {
             return Math.max(1, Integer.parseInt(String.valueOf(value)));
         } catch (Exception ignored) {
             return defaultValue;
+        }
+    }
+
+    private GitNexusQueryCandidate resolveCandidateFromQuery(String target, String repo, boolean includeTests) {
+        try {
+            String serverName = resolveGitNexusServer();
+            String queryTool = resolveGitNexusQueryTool();
+
+            Map<String, Object> arguments = new LinkedHashMap<>();
+            arguments.put("query", target);
+            if (repo != null && !repo.isBlank()) {
+                arguments.put("repo", repo);
+            }
+            if (includeTests) {
+                arguments.put("includeTests", true);
+            }
+
+            Object response = mcpService.callTool(serverName, queryTool, arguments);
+            Map<String, Object> payload = null;
+
+            // Handle MCP response where callTool directly returns "content" List
+            if (response instanceof List<?> contentList && !contentList.isEmpty()) {
+                Object first = contentList.get(0);
+                if (first instanceof Map<?, ?> firstMap) {
+                    Object textObj = firstMap.get("text");
+                    if (textObj instanceof String text && text.trim().startsWith("{")) {
+                        response = text;
+                    }
+                }
+            }
+
+            // Unwrap MCP response if it contains "content"
+            if (response instanceof Map<?, ?> rawMap) {
+                Object contentObj = rawMap.get("content");
+                if (contentObj instanceof List<?> contentList && !contentList.isEmpty()) {
+                    Object first = contentList.get(0);
+                    if (first instanceof Map<?, ?> firstMap) {
+                        Object textObj = firstMap.get("text");
+                        if (textObj instanceof String text && text.trim().startsWith("{")) {
+                            response = text;
+                        }
+                    }
+                }
+            }
+
+            if (response instanceof Map<?, ?> map) {
+                payload = castMap(map);
+            } else if (response instanceof String text && text.trim().startsWith("{")) {
+                payload = mapper.readValue(text, Map.class);
+            }
+            if (payload == null || payload.isEmpty()) {
+                return null;
+            }
+
+            List<Map<String, Object>> definitions = extractDefinitionList(payload);
+            if (definitions.isEmpty()) {
+                return null;
+            }
+
+            GitNexusQueryCandidate best = null;
+            for (Map<String, Object> def : definitions) {
+                String name = firstNonBlank(
+                        asString(def.get("name")),
+                        asString(def.get("qualifiedName")),
+                        extractNameFromUid(asString(def.get("uid"))),
+                        extractNameFromUid(asString(def.get("id")))
+                );
+                if (name == null) {
+                    continue;
+                }
+                String filePath = firstNonBlank(asString(def.get("filePath")), asString(def.get("path")));
+                GitNexusQueryCandidate candidate = new GitNexusQueryCandidate(name, filePath);
+                if (target.equalsIgnoreCase(name)) {
+                    return candidate;
+                }
+                if (best == null) {
+                    best = candidate;
+                } else if (name.toLowerCase(Locale.ROOT).contains(target.toLowerCase(Locale.ROOT))) {
+                    best = candidate;
+                }
+            }
+            return best;
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    private List<Map<String, Object>> extractDefinitionList(Map<String, Object> payload) {
+        List<Map<String, Object>> definitions = new ArrayList<>();
+        Object definitionPayload = payload.get("definitions");
+        if (definitionPayload instanceof List<?> list) {
+            for (Object item : list) {
+                if (item instanceof Map<?, ?> map) {
+                    definitions.add(castMap(map));
+                }
+            }
+        }
+        return definitions;
+    }
+
+    private String resolveGitNexusQueryTool() {
+        return "query";
+    }
+
+    private String buildTargetNotFoundMessage(String target) {
+        return "Target not found in GitNexus response: " + target +
+                ". Try a fully-qualified symbol name or a known class name (e.g., ThinkingCodingCommand).";
+    }
+
+    private Map<String, Object> castMap(Map<?, ?> map) {
+        Map<String, Object> result = new LinkedHashMap<>();
+        for (Map.Entry<?, ?> entry : map.entrySet()) {
+            if (entry.getKey() == null) {
+                continue;
+            }
+            result.put(String.valueOf(entry.getKey()), entry.getValue());
+        }
+        return result;
+    }
+
+    private String asString(Object value) {
+        if (value == null) {
+            return null;
+        }
+        String text = String.valueOf(value).trim();
+        return text.isEmpty() ? null : text;
+    }
+
+    private String firstNonBlank(String... candidates) {
+        if (candidates == null) {
+            return null;
+        }
+        for (String candidate : candidates) {
+            if (candidate != null && !candidate.isBlank()) {
+                return candidate;
+            }
+        }
+        return null;
+    }
+
+    private String extractNameFromUid(String uid) {
+        if (uid == null) {
+            return null;
+        }
+        int idx = uid.indexOf(':');
+        if (idx >= 0 && idx + 1 < uid.length()) {
+            return uid.substring(idx + 1).trim();
+        }
+        return uid.trim();
+    }
+
+    private static final class GitNexusQueryCandidate {
+        private final String lookupKey;
+        private final String filePath;
+
+        private GitNexusQueryCandidate(String lookupKey, String filePath) {
+            this.lookupKey = lookupKey;
+            this.filePath = filePath;
+        }
+
+        private String getLookupKey() {
+            return lookupKey;
+        }
+
+        private String getFilePath() {
+            return filePath;
         }
     }
 }

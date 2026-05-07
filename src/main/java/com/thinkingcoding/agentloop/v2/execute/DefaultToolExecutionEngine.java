@@ -11,6 +11,7 @@ import com.thinkingcoding.model.ToolCall;
 import com.thinkingcoding.model.ToolExecution;
 import com.thinkingcoding.model.ToolResult;
 import com.thinkingcoding.tools.BaseTool;
+import com.thinkingcoding.tools.ContextAwareTool;
 
 /**
  * 默认的工具执行引擎实现。
@@ -76,7 +77,17 @@ public class DefaultToolExecutionEngine implements ToolExecutionEngine {
 
             // 5. 执行工具
             String arguments = resultFormatter.convertParametersToJson(resolved.parameters());
-            ToolResult result = tool.execute(arguments);
+            ToolResult result;
+            if (tool instanceof ContextAwareTool contextAwareTool) {
+                contextAwareTool.setTurnContext(turn);
+                try {
+                    result = tool.execute(arguments);
+                } finally {
+                    contextAwareTool.clearTurnContext();
+                }
+            } else {
+                result = tool.execute(arguments);
+            }
 
             // 6. 处理执行结果
             if (result.isSuccess()) {

@@ -198,6 +198,12 @@ public class ContextManager {
 
             context.append("##  智能工作流程（重要！）\n\n");
 
+            context.append("### 🧭 复杂任务的结构化规划（TODO指南针）\n\n");
+            context.append("- 当用户分配复杂的、多步骤的编程或重构任务时，不要立刻编写全部代码。\n");
+            context.append("- 第一步必须是调用 manage_todo(action=\"add\", ...) 创建任务列表。\n");
+            context.append("- 在接下来的每一次行动中，系统都会通过 <system-reminder> 提示你当前进度。\n");
+            context.append("- 完成一个小目标后，调用 manage_todo(action=\"complete\", id=\"...\") 更新进度，再进行下一步。\n\n");
+
             context.append("###  当用户要求创建/编写代码文件时：\n\n");
             context.append("**重要：直接生成代码，不要先检查文件是否存在！**\n\n");
             context.append("当用户说\"写一个Java代码\"、\"创建HelloWorld程序\"等时：\n\n");

@@ -16,6 +16,7 @@ import com.thinkingcoding.tools.exec.CommandExecutorTool;
 import com.thinkingcoding.tools.file.FileManagerTool;
 import com.thinkingcoding.tools.rag.CodeGraphTool;
 import com.thinkingcoding.tools.search.GrepSearchTool;
+import com.thinkingcoding.tools.todo.AgentTodoTool;
 import com.thinkingcoding.ui.ThinkingCodingUI;
 import com.thinkingcoding.skill.LazySkillToolAdapter;
 import com.thinkingcoding.skill.SkillContextLoader;
@@ -96,6 +97,8 @@ public class ThinkingCodingContext {
         if (appConfig.getTools().getSearch().isEnabled()) {
             toolRegistry.register(new GrepSearchTool(appConfig));
         }
+
+        toolRegistry.register(new AgentTodoTool());
 
         if (appConfig.getTools().getCodeGraph().isEnabled()) {
             toolRegistry.register(new CodeGraphTool(appConfig, mcpService));

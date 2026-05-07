@@ -18,6 +18,7 @@ import com.thinkingcoding.agentloop.v2.steer.ToolConfirmationPolicy;
 import com.thinkingcoding.core.ThinkingCodingContext;
 import com.thinkingcoding.core.ToolExecutionConfirmation;
 import com.thinkingcoding.model.ChatMessage;
+import com.thinkingcoding.model.ToolCall;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -126,6 +127,9 @@ public class AgentOrchestrator {
                 return;
             }
 
+                        refreshTodoFromPlan(turn, planResult.getToolCalls());
+                        appendPlanSummary(turn, planResult);
+
             // AI 文本显示由 AgentEventSink 统一处理（支持流式与收尾）。
 
             // 如果有选项，显示提示
@@ -224,5 +228,84 @@ public class AgentOrchestrator {
      */
     public String getSessionId() {
         return sessionId;
+    }
+
+    private void appendPlanSummary(TurnContext turn, PlanResult planResult) {
+        String planSummary = formatPlanSummary(planResult);
+        if (!planSummary.isBlank()) {
+            context.getUi().displayInfo("\n" + planSummary);
+            history.add(new ChatMessage("system", planSummary));
+        }
+
+        String todoSummary = formatTodoSummary(turn);
+        if (!todoSummary.isBlank()) {
+            context.getUi().displayInfo("\n" + todoSummary);
+            history.add(new ChatMessage("system", todoSummary));
+        }
+    }
+
+    private void refreshTodoFromPlan(TurnContext turn, List<ToolCall> toolCalls) {
+        if (turn == null || toolCalls == null || toolCalls.isEmpty()) {
+            return;
+        }
+
+        List<String> todoLines = new ArrayList<>();
+        for (ToolCall call : toolCalls) {
+            if (!"manage_todo".equals(call.getToolName())) {
+                continue;
+            }
+            Object action = call.getParameters() == null ? null : call.getParameters().get("action");
+            Object content = call.getParameters() == null ? null : call.getParameters().get("content");
+            if (action == null || content == null) {
+                continue;
+            }
+            if (!"add".equalsIgnoreCase(String.valueOf(action))) {
+                continue;
+            }
+            todoLines.add(String.valueOf(content));
+        }
+
+        if (!todoLines.isEmpty()) {
+            turn.getTodoTracker().resetWithContents(todoLines);
+        }
+    }
+
+    private String formatPlanSummary(PlanResult planResult) {
+        if (planResult == null) {
+            return "";
+        }
+
+        StringBuilder builder = new StringBuilder();
+        builder.append("<plan>\n");
+
+        String assistantText = planResult.getAssistantText();
+        if (assistantText != null && !assistantText.isBlank()) {
+            builder.append("计划输出:\n");
+            builder.append(assistantText.trim()).append("\n");
+        }
+
+        List<ToolCall> toolCalls = planResult.getToolCalls();
+        if (toolCalls != null && !toolCalls.isEmpty()) {
+            builder.append("工具调用:\n");
+            int index = 1;
+            for (ToolCall call : toolCalls) {
+                builder.append("-").append(index++).append(" ")
+                        .append(call.getToolName());
+                if (call.getParameters() != null && !call.getParameters().isEmpty()) {
+                    builder.append(" ").append(call.getParameters());
+                }
+                builder.append("\n");
+            }
+        }
+
+        builder.append("</plan>");
+        return builder.toString();
+    }
+
+    private String formatTodoSummary(TurnContext turn) {
+        if (turn == null) {
+            return "";
+        }
+        return turn.getTodoTracker().renderSystemReminder();
     }
 }

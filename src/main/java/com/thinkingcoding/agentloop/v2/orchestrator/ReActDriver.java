@@ -78,6 +78,8 @@ public class ReActDriver {
         int steps = 0;
         boolean cancelled = false;
         String finalAssistantText = initialPlan.getAssistantText();
+        List<String> recentFailureErrors = new ArrayList<>();
+        int failureAttempts = 0;
 
         // 初始化待执行的工具调用队列
         List<ToolCall> toolCalls = new ArrayList<>(initialPlan.getToolCalls());
@@ -86,6 +88,7 @@ public class ReActDriver {
         // 🔥 添加已执行工具的跟踪，防止重复执行相同工具调用
         Set<String> executedToolSignatures = new java.util.HashSet<>();
         Map<String, ChatMessage> cachedToolResults = new HashMap<>();
+        Map<String, Integer> toolCallAttempts = new HashMap<>();
 
         // 启动 ReAct 主循环，受最大步数限制
         while (steps < config.getMaxReActStepsPerTurn()) {
@@ -107,13 +110,17 @@ public class ReActDriver {
             
             // 🔥 检查是否为重复的工具调用（防止无限循环）
             String toolSignature = generateToolSignature(currentToolCall);
-            if (executedToolSignatures.contains(toolSignature)) {
-                context.getUi().displayWarning("⚠️  检测到重复的工具调用，复用缓存结果: " + currentToolCall.getToolName());
-                ChatMessage cached = cachedToolResults.get(toolSignature);
-                if (cached != null) {
-                    turn.getHistory().add(new ChatMessage(cached));
-                }
-                continue;
+            int attemptCount = toolCallAttempts.getOrDefault(toolSignature, 0) + 1;
+            toolCallAttempts.put(toolSignature, attemptCount);
+            if (attemptCount > 1) {
+                context.getUi().displayWarning("⚠️  检测到重复的工具调用，终止当前回合: " + currentToolCall.getToolName());
+                String reminder = "<plan>\n检测到重复的工具调用，已终止当前回合以避免死循环。\n" +
+                        "重复工具: " + currentToolCall.getToolName() + "\n" +
+                        "重复次数: " + attemptCount + "\n" +
+                        "建议: 调整参数或改用其他工具后重新规划。\n</plan>";
+                turn.getHistory().add(new ChatMessage("system", reminder));
+                cancelled = true;
+                break;
             }
 
             // 检查是否达到单轮最大工具调用限制
@@ -149,16 +156,76 @@ public class ReActDriver {
                 continue;
             }
 
+            // 若工具执行失败，触发重试或重新规划
+            if (outcome.getResult() != null && !outcome.getResult().isSuccess()) {
+                failureAttempts++;
+                recentFailureErrors.add(outcome.getResult().getError());
+
+                if (failureAttempts >= 3) {
+                    String failureSummary = buildFailureSummary(recentFailureErrors);
+                    turn.getHistory().add(new ChatMessage("system", failureSummary));
+                    PlanResult fallbackPlan = planner.plan(
+                            buildFailurePlanRequest(turn, failureSummary),
+                            events,
+                            steering
+                    );
+                    if (fallbackPlan.isStopped()) {
+                        cancelled = true;
+                        break;
+                    }
+                    if (!fallbackPlan.getAssistantText().isEmpty()) {
+                        finalAssistantText = fallbackPlan.getAssistantText();
+                    }
+                    toolCalls.clear();
+                    toolCallIndex = 0;
+                    recentFailureErrors.clear();
+                    failureAttempts = 0;
+                    if (fallbackPlan.hasToolCalls()) {
+                        toolCalls.addAll(fallbackPlan.getToolCalls());
+                    }
+                    continue;
+                }
+
+                PlanResult retryPlan = planner.plan(
+                        buildFailurePlanRequest(turn, buildFailureSummary(recentFailureErrors)),
+                        events,
+                        steering
+                );
+                if (retryPlan.isStopped()) {
+                    cancelled = true;
+                    break;
+                }
+                if (!retryPlan.getAssistantText().isEmpty()) {
+                    finalAssistantText = retryPlan.getAssistantText();
+                }
+                toolCalls.clear();
+                toolCallIndex = 0;
+                if (retryPlan.hasToolCalls()) {
+                    toolCalls.addAll(retryPlan.getToolCalls());
+                }
+                continue;
+            } else {
+                // 成功执行则清空失败计数
+                recentFailureErrors.clear();
+                failureAttempts = 0;
+            }
+
             // 若队列中仍有缓存的工具调用，则继续执行而不触发重新规划
             if (toolCallIndex < toolCalls.size()) {
                 continue;
             }
 
             // 触发 Planner 进行续跑规划（ReAct 核心：基于观察结果决定下一步）
+            String continuationPrompt = "基于以上工具执行结果，请继续完成任务。如果任务已完成，请总结结果。";
+            String reminder = turn.getTodoTracker().renderSystemReminder();
+            if (reminder != null && !reminder.isBlank()) {
+                continuationPrompt += "\n\n" + reminder;
+            }
+
             PlanRequest continuationRequest = new PlanRequest(
                     turn.getSessionId(),
                     turn.getModelName(),
-                    "基于以上工具执行结果，请继续完成任务。如果任务已完成，请总结结果。",
+                    continuationPrompt,
                     turn.getHistory(),
                     true
             );
@@ -212,5 +279,28 @@ public class ReActDriver {
         }
         
         return signature.toString();
+    }
+
+    private PlanRequest buildFailurePlanRequest(TurnContext turn, String failureSummary) {
+        String prompt = "工具执行失败，请根据错误信息调整参数或改用其他工具重试：\n" + failureSummary;
+        return new PlanRequest(
+                turn.getSessionId(),
+                turn.getModelName(),
+                prompt,
+                turn.getHistory(),
+                true
+        );
+    }
+
+    private String buildFailureSummary(List<String> failures) {
+        StringBuilder summary = new StringBuilder();
+        summary.append("<system-reminder>\n");
+        summary.append("以下是最近的工具失败记录：\n");
+        int index = 1;
+        for (String error : failures) {
+            summary.append(index++).append(". ").append(error == null ? "(无错误信息)" : error).append("\n");
+        }
+        summary.append("</system-reminder>");
+        return summary.toString();
     }
 }
