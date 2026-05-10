@@ -38,16 +38,28 @@ public class TodoTracker {
         if (id == null || id.isBlank() || status == null) {
             return false;
         }
+        // 精确 ID 匹配
         for (TodoItem item : items) {
             if (id.equals(item.getId())) {
-                item.setStatus(status);
-                if (status == TodoStatus.DONE && item.getContent() != null && !item.getContent().isBlank()) {
-                    completedContents.add(item.getContent().trim());
-                }
+                setItemStatus(item, status);
+                return true;
+            }
+        }
+        // Fallback: 内容模糊匹配（AI 可能用工具名或描述中的关键词作为 ID）
+        for (TodoItem item : items) {
+            if (item.getContent() != null && item.getContent().contains(id)) {
+                setItemStatus(item, status);
                 return true;
             }
         }
         return false;
+    }
+
+    private void setItemStatus(TodoItem item, TodoStatus status) {
+        item.setStatus(status);
+        if (status == TodoStatus.DONE && item.getContent() != null && !item.getContent().isBlank()) {
+            completedContents.add(item.getContent().trim());
+        }
     }
 
     public synchronized void resetWithContents(List<String> contents) {
@@ -83,7 +95,7 @@ public class TodoTracker {
         boolean hinted = false;
         for (TodoItem item : items) {
             String marker = item.getStatus() == TodoStatus.DONE ? "[x]" : "[ ]";
-            builder.append("- ").append(marker).append(" ").append(item.getContent());
+            builder.append("- ").append(marker).append(" [").append(item.getId()).append("] ").append(item.getContent());
 
             if (item.getStatus() == TodoStatus.IN_PROGRESS) {
                 builder.append(" (IN_PROGRESS)");

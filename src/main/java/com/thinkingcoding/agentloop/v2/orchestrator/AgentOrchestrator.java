@@ -22,6 +22,7 @@ import com.thinkingcoding.model.ToolCall;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 
 /**
  * V2 Agent 编排器，实现 Plan → Execute + ReAct → Steering 三阶段流水线。
@@ -127,17 +128,15 @@ public class AgentOrchestrator {
                 return;
             }
 
-            // AI 文本显示由 AgentEventSink 统一处理（支持流式与收尾）。
-
-            // 如果有选项，显示提示
-            if (planResult.hasOptions()) {
-                // OptionManager 已在 Planner 中处理
+            // 🔥 将 assistant 回复以正确 role 记入 history
+            if (planResult.getAssistantText() != null && !planResult.getAssistantText().isBlank()) {
+                history.add(new ChatMessage("assistant", planResult.getAssistantText()));
             }
 
             // ===== Plan 确认环节 =====
-            // 如果规划结果中包含工具调用，先展示计划让用户确认，再进入执行阶段
+            ExecuteReactResult executeResult = null;
             if (planResult.hasToolCalls()) {
-                // 展示计划摘要
+                // 展示计划摘要（仅工具调用，不含 assistant 文本）
                 String planSummary = formatPlanSummary(planResult);
                 if (!planSummary.isBlank()) {
                     context.getUi().displayInfo("\n" + planSummary);
@@ -168,7 +167,7 @@ public class AgentOrchestrator {
 
                 // ===== Phase 2 & 3: Execute + ReAct with Steering =====
                 context.getUi().displayInfo("\n🔧 开始执行...");
-                ExecuteReactResult executeResult = reactDriver.run(
+                executeResult = reactDriver.run(
                         turn,
                         planResult,
                         planner,
@@ -184,12 +183,11 @@ public class AgentOrchestrator {
                     context.getUi().displaySuccess("\n✅ 执行完成，共 " + executeResult.getSteps() + " 步");
                 }
             } else {
-                // 无工具调用的纯文本回复，仅记入历史
-                String planSummary = formatPlanSummary(planResult);
-                if (!planSummary.isBlank()) {
-                    history.add(new ChatMessage("system", planSummary));
-                }
+                // 无工具调用的纯文本回复 — assistant 消息已记入 history
             }
+
+            // 🔥 保存当前上下文数据到 ContextManager，供下一轮 Current Context 使用
+            saveCurrentContext(planResult, executeResult);
 
             // 保存会话
             sessionGateway.save(sessionId, history);
@@ -324,6 +322,8 @@ public class AgentOrchestrator {
         }
 
         List<String> todoLines = new ArrayList<>();
+
+        // 先检查是否有 AI 显式声明的 manage_todo 条目
         for (ToolCall call : toolCalls) {
             if (!"manage_todo".equals(call.getToolName())) {
                 continue;
@@ -339,8 +339,83 @@ public class AgentOrchestrator {
             todoLines.add(String.valueOf(content));
         }
 
+        // 如果没有显式 TODO，从普通工具调用中自动生成
+        if (todoLines.isEmpty()) {
+            for (ToolCall call : toolCalls) {
+                if ("manage_todo".equals(call.getToolName())) {
+                    continue;
+                }
+                StringBuilder desc = new StringBuilder(call.getToolName());
+                Map<String, Object> params = call.getParameters();
+                if (params != null && !params.isEmpty()) {
+                    // 提取有意义的参数作为描述
+                    Object path = params.get("path");
+                    Object name = params.get("name");
+                    Object target = params.get("target");
+                    Object command = params.get("command");
+                    if (path != null) {
+                        desc.append(" ").append(path);
+                    } else if (name != null) {
+                        desc.append(" ").append(name);
+                    } else if (target != null) {
+                        desc.append(" ").append(target);
+                    } else if (command != null) {
+                        desc.append(" ").append(command);
+                    }
+                }
+                todoLines.add(desc.toString());
+            }
+        }
+
         if (!todoLines.isEmpty()) {
             turn.getTodoTracker().resetWithContents(todoLines);
+        }
+    }
+
+    /**
+     * 🔥 保存当前 turn 的 Plan 摘要和工具执行结果到 ContextManager，
+     * 作为下一轮 Current Context 的 "当前目标" 和 "上一轮执行结果"。
+     */
+    private void saveCurrentContext(PlanResult planResult, ExecuteReactResult executeResult) {
+        com.thinkingcoding.service.ContextManager ctxMgr = context.getContextManager();
+        if (ctxMgr == null) {
+            return;
+        }
+
+        // 仅在有工具执行时保存上下文；纯对话 turn 不产生 Current Context 数据
+        if (executeResult == null || !executeResult.hasExecutions()) {
+            return;
+        }
+
+        // 保存简洁任务摘要作为下一轮的 "当前目标"
+        String taskSummary = extractTaskSummary(planResult);
+        if (taskSummary != null && !taskSummary.isBlank()) {
+            ctxMgr.setLastPlanSummary(taskSummary);
+        }
+
+        // 保存上一轮工具执行结果（完整保留）
+        StringBuilder results = new StringBuilder();
+        List<com.thinkingcoding.agentloop.v2.execute.ToolExecutionOutcome> trace = executeResult.getTrace();
+        for (int i = 0; i < trace.size(); i++) {
+            com.thinkingcoding.agentloop.v2.execute.ToolExecutionOutcome outcome = trace.get(i);
+            if (outcome.isExecuted()) {
+                results.append("**").append(outcome.getCall().getToolName()).append("**: ");
+                com.thinkingcoding.model.ToolResult toolResult = outcome.getResult();
+                if (toolResult != null) {
+                    if (toolResult.isSuccess()) {
+                        String output = toolResult.getOutput();
+                        if (output != null && output.length() > 2000) {
+                            output = output.substring(0, 2000) + "\n... (输出截断，完整结果见历史)";
+                        }
+                        results.append("✅ ").append(output != null ? output : "执行成功").append("\n");
+                    } else {
+                        results.append("❌ ").append(toolResult.getError() != null ? toolResult.getError() : "执行失败").append("\n");
+                    }
+                }
+            }
+        }
+        if (!results.isEmpty()) {
+            ctxMgr.setLastToolResults(results.toString());
         }
     }
 
@@ -354,13 +429,13 @@ public class AgentOrchestrator {
 
         String assistantText = planResult.getAssistantText();
         if (assistantText != null && !assistantText.isBlank()) {
-            builder.append("计划输出:\n");
+            builder.append("方案计划:\n");
             builder.append(assistantText.trim()).append("\n");
         }
 
         List<ToolCall> toolCalls = planResult.getToolCalls();
         if (toolCalls != null && !toolCalls.isEmpty()) {
-            builder.append("工具调用:\n");
+            builder.append("\n工具调用:\n");
             int index = 1;
             for (ToolCall call : toolCalls) {
                 builder.append("-").append(index++).append(" ")
@@ -374,6 +449,48 @@ public class AgentOrchestrator {
 
         builder.append("</plan>");
         return builder.toString();
+    }
+
+    /**
+     * 从 PlanResult 中提取简洁的任务摘要，用作下一轮的"当前目标"。
+     * 优先取 assistant text 的第一句，fallback 到工具名列表。
+     */
+    private String extractTaskSummary(PlanResult planResult) {
+        if (planResult == null) {
+            return null;
+        }
+
+        String assistantText = planResult.getAssistantText();
+        if (assistantText != null && !assistantText.isBlank()) {
+            // 取第一句（以 。！？.!? 或换行 为界，最多 100 字）
+            String text = assistantText.trim();
+            int end = -1;
+            for (char delim : new char[]{'。', '！', '？', '.', '!', '?', '\n'}) {
+                int pos = text.indexOf(delim);
+                if (pos > 0 && (end < 0 || pos < end)) {
+                    end = pos;
+                }
+            }
+            if (end > 0 && end < 100) {
+                return text.substring(0, end + 1).trim();
+            }
+            if (text.length() <= 100) {
+                return text;
+            }
+            return text.substring(0, 100) + "...";
+        }
+
+        // fallback: 工具调用名列表
+        List<ToolCall> toolCalls = planResult.getToolCalls();
+        if (toolCalls != null && !toolCalls.isEmpty()) {
+            List<String> names = new ArrayList<>();
+            for (ToolCall call : toolCalls) {
+                names.add(call.getToolName());
+            }
+            return "执行工具: " + String.join(", ", names);
+        }
+
+        return null;
     }
 
     private String formatTodoSummary(TurnContext turn) {

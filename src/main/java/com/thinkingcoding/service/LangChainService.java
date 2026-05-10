@@ -453,28 +453,35 @@ public class LangChainService implements AIService {
         };
     }
 
-    private List<dev.langchain4j.data.message.ChatMessage>  prepareMessages(String input, List<ChatMessage> history) {
-        // 添加项目上下文
+    private List<dev.langchain4j.data.message.ChatMessage> prepareMessages(String input, List<ChatMessage> history) {
         List<dev.langchain4j.data.message.ChatMessage> messages = new ArrayList<>();
-        // 在对话开始时注入项目相关的系统消息，提供必要的背景信息帮助模型理解当前环境和限制。
+
+        // === Part 1: System Message — 角色定义、行为规范、Skills ===
         if (contextManager != null) {
-            ChatMessage projectContext = contextManager.buildProjectContextMessage();
-            if (projectContext != null) {
-                messages.add(dev.langchain4j.data.message.SystemMessage.from(projectContext.getContent()));
+            ChatMessage systemMsg = contextManager.buildProjectContextMessage();
+            if (systemMsg != null) {
+                messages.add(dev.langchain4j.data.message.SystemMessage.from(systemMsg.getContent()));
             }
         }
 
-        // 管理对话历史，注入必要的上下文信息（如工具使用记录、已执行的命令等），以帮助模型更好地理解当前对话状态和限制。
-        List<ChatMessage> managedHistory = history;
+        // === Part 2: History Messages — User/Assistant/System 角色，经压缩管理 ===
         if (contextManager != null && history != null && !history.isEmpty()) {
-            managedHistory = contextManager.getContextForAI(history);
+            List<ChatMessage> managedHistory = contextManager.getContextForAI(history);
+            if (managedHistory != null && !managedHistory.isEmpty()) {
+                messages.addAll(convertToLangChainHistory(managedHistory));
+            }
         }
 
-        if (managedHistory != null && !managedHistory.isEmpty()) {
-            messages.addAll(convertToLangChainHistory(managedHistory));
+        // === Part 3: Current Context — 拼接到最新 UserMessage ===
+        String augmentedInput = input;
+        if (contextManager != null) {
+            String currentContext = contextManager.buildCurrentContext(toolRegistry.getAllTools());
+            if (currentContext != null && !currentContext.isBlank()) {
+                augmentedInput = input + currentContext;
+            }
         }
+        messages.add(dev.langchain4j.data.message.UserMessage.from(augmentedInput));
 
-        messages.add(dev.langchain4j.data.message.UserMessage.from(input));
         return messages;
     }
 

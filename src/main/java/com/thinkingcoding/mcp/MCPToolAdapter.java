@@ -91,6 +91,11 @@ public class MCPToolAdapter extends BaseTool {
         return mcpClient != null && mcpClient.isConnected();
     }
 
+    @Override
+    public Object getInputSchema() {
+        return mcpTool.getInputSchema();
+    }
+
     /**
      * 获取原始MCP工具信息
      */
