@@ -19,7 +19,12 @@ public class GrepSearchTool extends BaseTool {
 
     private final AppConfig appConfig;
     public GrepSearchTool(AppConfig appConfig) {
-        super("grep_search", "Search for text patterns in files using grep-like functionality");
+        super("grep_search",
+              "Search files for exact text or regex patterns. Recursively walks directories, returns file:line:content matches. " +
+              "Format: <pattern> <path>. Supports Java regex; falls back to literal search if the regex is invalid. " +
+              "Use when you know the exact class name, method name, variable name, or string literal to find. " +
+              "For natural-language or conceptual queries (e.g., 'how does authentication work'), " +
+              "prefer semantic_search — it understands meaning, not just text matching.");
         this.appConfig = appConfig;
     }
 

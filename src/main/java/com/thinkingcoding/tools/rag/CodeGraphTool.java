@@ -30,7 +30,14 @@ public class CodeGraphTool extends BaseTool {
     private final GitNexusCodeGraphMapper graphMapper = new GitNexusCodeGraphMapper();
 
     public CodeGraphTool(AppConfig appConfig, MCPService mcpService) {
-        super("code_graph", "Build and query a lightweight code graph via GitNexus MCP");
+        super("code_graph",
+              "Query the code graph to look up a symbol's definition, dependencies, public members, and callers via GitNexus. " +
+              "Input: a symbol name (e.g., 'ThinkingCodingCommand') or file path. " +
+              "Returns: qualified name, file path, declaration, public fields/members, dependency list with reference kinds, " +
+              "and unresolved references. " +
+              "Use BEFORE editing a class/function — understand its relationships, callers, and dependencies to assess impact. " +
+              "NOT for: text searches (use grep_search), natural-language code exploration (use semantic_search), " +
+              "or reading file contents (use file_manager).");
         this.appConfig = appConfig;
         this.mcpService = mcpService;
     }

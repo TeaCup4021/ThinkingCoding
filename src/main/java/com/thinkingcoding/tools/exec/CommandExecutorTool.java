@@ -18,7 +18,12 @@ public class CommandExecutorTool extends BaseTool {
     private final AppConfig appConfig;
 
     public CommandExecutorTool(AppConfig appConfig) {
-        super("command_executor", "Execute system commands safely");
+        super("command_executor",
+              "Execute whitelisted system commands (git, mvn, npm, ls, curl, python, node, etc.) via the OS shell. " +
+              "Only pre-approved commands are allowed — unknown commands are rejected. " +
+              "Use for: running builds (mvn, gradle), version control (git), package managers (npm), file utils (ls, cat, find). " +
+              "NOT for: executing code snippets directly (use code_executor for Java/Python/JS), " +
+              "reading/writing project files (use file_manager), or searching code (use grep_search / semantic_search).");
         this.appConfig = appConfig;
 
         if (appConfig.getTools().getCommandExec().getAllowedCommands() != null) {

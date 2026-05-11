@@ -88,6 +88,18 @@ public class LazySkillToolAdapter extends BaseTool {
     }
 
     @Override
+    public String getDescription() {
+        Skill loaded = skill;
+        if (loaded != null) {
+            String desc = loaded.getDescription();
+            if (desc != null && !desc.isBlank()) {
+                return desc;
+            }
+        }
+        return super.getDescription();
+    }
+
+    @Override
     public boolean isEnabled() {
         return skillConfig == null || skillConfig.isEnabled();
     }
@@ -157,7 +169,9 @@ public class LazySkillToolAdapter extends BaseTool {
         if (skillConfig != null && skillConfig.getDescription() != null) {
             return skillConfig.getDescription();
         }
-        return "Skill tool";
+        return skillConfig != null && skillConfig.getName() != null
+                ? "Skill: " + skillConfig.getName()
+                : "Skill tool";
     }
 
     private static Object resolveSchema(AppConfig.SkillConfig skillConfig) {

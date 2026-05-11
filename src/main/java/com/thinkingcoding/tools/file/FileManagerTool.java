@@ -21,7 +21,12 @@ public class FileManagerTool extends BaseTool {
 
 
     public FileManagerTool(AppConfig appConfig) {
-        super("file_manager", "File management tool for reading, writing, and managing files");
+        super("file_manager",
+              "Read, write, list, create, delete, and inspect files/directories on the local filesystem. " +
+              "Actions: read | write | list | create | delete | info. " +
+              "Use for: viewing source files, writing new files, listing directories, checking file metadata. " +
+              "NOT for: searching file contents (use grep_search for exact terms, semantic_search for concepts), " +
+              "executing code (use code_executor), or running shell commands (use command_executor).");
         this.maxFileSize = appConfig.getTools().getFileManager().getMaxFileSize();
         this.appConfig = appConfig;
     }

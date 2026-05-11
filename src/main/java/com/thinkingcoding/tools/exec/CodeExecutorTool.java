@@ -19,7 +19,14 @@ public class CodeExecutorTool extends BaseTool {
 
     private final AppConfig appConfig;
     public CodeExecutorTool(AppConfig appConfig) {
-        super("code_executor", "Execute code snippets in various programming languages");
+        super("code_executor",
+              "Execute code snippets in Java, JavaScript (Node.js), or Python. " +
+              "Format: <language> <code>. Languages: java | javascript | js | python | py. " +
+              "Java code is auto-wrapped in a class+main method if no class is detected, compiled to a temp dir, then run. " +
+              "JS requires Node.js installed; Python requires a Python interpreter. " +
+              "Use for: quick calculations, testing logic, code prototyping. " +
+              "NOT for: running shell commands (use command_executor), reading project files (use file_manager), " +
+              "or file-system searches (use grep_search / semantic_search).");
         this.appConfig = appConfig;
     }
 

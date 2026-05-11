@@ -91,6 +91,8 @@ public class ToolRegistry implements ToolProvider {
                 return appConfig.getTools().getSearch().isEnabled();
             case "code_graph":
                 return appConfig.getTools().getCodeGraph().isEnabled();
+            case "semantic_search":
+                return appConfig.getTools().getSemanticSearch().isEnabled();
             default:
                 return true;
         }

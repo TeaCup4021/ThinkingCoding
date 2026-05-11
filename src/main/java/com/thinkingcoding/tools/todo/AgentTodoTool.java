@@ -20,7 +20,13 @@ public class AgentTodoTool extends BaseTool implements ContextAwareTool {
     private TurnContext turnContext;
 
     public AgentTodoTool() {
-        super("manage_todo", "管理结构化 TODO 列表，用于复杂任务的规划推进");
+        super("manage_todo",
+              "Track subtask progress for complex multi-step tasks. " +
+              "Actions: add (create a task, optionally with PENDING/IN_PROGRESS/DONE status), " +
+              "update (change a task's status), complete (mark a task DONE), clear (remove all tasks). " +
+              "Use this to break down large requests into discrete steps and track completion — " +
+              "it demonstrates attentiveness and ensures no step is skipped. " +
+              "This is an internal planning tool, not for file or code operations.");
     }
 
     @Override

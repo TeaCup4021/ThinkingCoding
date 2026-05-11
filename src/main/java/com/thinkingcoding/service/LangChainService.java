@@ -294,6 +294,10 @@ public class LangChainService implements AIService {
         }
     }
 
+    /**
+     * 构建工具规格列表，供模型在生成过程中调用工具时参考。
+     * @return
+     */
     private List<ToolSpecification> buildToolSpecifications() {
         List<ToolSpecification> specifications = new ArrayList<>();
 
