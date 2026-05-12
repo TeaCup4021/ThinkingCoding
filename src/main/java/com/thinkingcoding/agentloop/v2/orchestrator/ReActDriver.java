@@ -90,7 +90,7 @@ public class ReActDriver {
         Map<String, ChatMessage> cachedToolResults = new HashMap<>();
         Map<String, Integer> toolCallAttempts = new HashMap<>();
 
-        // 启动 ReAct 主循环，受最大步数限制
+        // 启动 ReAct 主循环，受最大迭代步数限制（安全网，含跳过/丢弃的步骤）
         while (steps < config.getMaxReActStepsPerTurn()) {
             // 检查用户是否请求取消当前回合
             if (steering.shouldCancelTurn()) {
@@ -123,8 +123,9 @@ public class ReActDriver {
                 break;
             }
 
-            // 检查是否达到单轮最大工具调用限制
-            if (trace.size() >= config.getMaxToolCallsPerPlan()) {
+            // 检查是否达到单轮最大实际执行工具数限制（仅统计已执行的工具调用，跳过的计入 maxReActSteps 但不计入此限制）
+            long executedCount = trace.stream().filter(ToolExecutionOutcome::isExecuted).count();
+            if (executedCount >= config.getMaxToolCallsPerPlan()) {
                 context.getUi().displayInfo("ℹ️  已达到本轮最大工具调用数 (" + config.getMaxToolCallsPerPlan() + ")");
                 break;
             }
@@ -252,9 +253,9 @@ public class ReActDriver {
             }
         }
 
-        // 若因达到最大步数限制而退出，发出警告提示
+        // 若因达到最大迭代步数而退出，发出警告（此限制通常不应触发，触发说明可能死循环）
         if (steps >= config.getMaxReActStepsPerTurn()) {
-            context.getUi().displayWarning("⚠️  已达到最大 ReAct 步数限制 (" + config.getMaxReActStepsPerTurn() + ")");
+            context.getUi().displayWarning("⚠️  已达到最大 ReAct 迭代步数 (" + config.getMaxReActStepsPerTurn() + ")，可能存在死循环");
         }
 
         return new ExecuteReactResult(steps, trace, cancelled, finalAssistantText);
