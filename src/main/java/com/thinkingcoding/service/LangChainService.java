@@ -265,6 +265,73 @@ public class LangChainService implements AIService {
         return history;
     }
 
+    @Override
+    public String directChat(String systemPrompt, String userPrompt, String modelName) {
+        if (streamingChatModel == null) {
+            throw new IllegalStateException("Model not initialized. Please check your configuration.");
+        }
+
+        final StringBuilder fullResponse = new StringBuilder();
+        final CompletableFuture<Void> completionFuture = new CompletableFuture<>();
+
+        try {
+            List<dev.langchain4j.data.message.ChatMessage> messages = new ArrayList<>();
+            if (systemPrompt != null && !systemPrompt.isBlank()) {
+                messages.add(dev.langchain4j.data.message.SystemMessage.from(systemPrompt));
+            }
+            messages.add(dev.langchain4j.data.message.UserMessage.from(userPrompt));
+
+            ChatRequest request = ChatRequest.builder()
+                    .messages(messages)
+                    .toolSpecifications(Collections.emptyList())
+                    .build();
+
+            streamingChatModel.chat(request, new StreamingChatResponseHandler() {
+                @Override
+                public void onPartialResponse(String token) {
+                    fullResponse.append(token);
+                }
+
+                @Override
+                public void onCompleteResponse(ChatResponse chatResponse) {
+                    if (chatResponse.tokenUsage() != null && contextManager != null) {
+                        try {
+                            Object tokenUsage = chatResponse.tokenUsage();
+                            int promptTokens = readTokenUsage(tokenUsage,
+                                    "promptTokenCount", "inputTokenCount", "promptTokens", "inputTokens");
+                            int completionTokens = readTokenUsage(tokenUsage,
+                                    "completionTokenCount", "outputTokenCount", "completionTokens", "outputTokens");
+                            int totalTokens = readTokenUsage(tokenUsage, "totalTokenCount", "totalTokens");
+                            contextManager.recordTokenUsage(promptTokens, completionTokens, totalTokens);
+                        } catch (Exception ignored) {
+                        }
+                    }
+                    completionFuture.complete(null);
+                }
+
+                @Override
+                public void onError(Throwable error) {
+                    completionFuture.completeExceptionally(error);
+                }
+            });
+
+            try {
+                completionFuture.get(5, TimeUnit.MINUTES);
+            } catch (java.util.concurrent.TimeoutException e) {
+                completionFuture.cancel(true);
+            } catch (Exception e) {
+                if (!fullResponse.isEmpty()) {
+                    return fullResponse.toString().trim();
+                }
+                throw new RuntimeException("Direct chat failed: " + e.getMessage(), e);
+            }
+        } catch (Exception e) {
+            System.err.println("Direct chat error: " + e.getMessage());
+        }
+
+        return fullResponse.toString().trim();
+    }
+
     private List<ToolCall> extractToolCalls(ChatResponse chatResponse) {
         if (chatResponse == null || chatResponse.aiMessage() == null || !chatResponse.aiMessage().hasToolExecutionRequests()) {
             return Collections.emptyList();

@@ -1,7 +1,6 @@
 package com.thinkingcoding.skill.autotest;
 
 import com.thinkingcoding.config.AppConfig;
-import com.thinkingcoding.model.ChatMessage;
 import com.thinkingcoding.model.ToolResult;
 import com.thinkingcoding.service.AIService;
 import com.thinkingcoding.skill.Skill;
@@ -128,8 +127,10 @@ public class AutoTestSkill implements Skill {
                     }
                     meaningfulFixes++;
                     String fixedTest = fixTest(sourcePath.toString(), sourceCode, testPath.toString(), currentTestCode, lastError, model, skillContext);
+                    if (fixedTest.equals(currentTestCode)) {
+                        continue;
+                    }
                     Files.writeString(testPath, fixedTest);
-                    attempt--; // 不消耗失败次数，继续改写直到有意义或达到上限
                     continue;
                 }
 
@@ -140,6 +141,9 @@ public class AutoTestSkill implements Skill {
 
                 String currentTestCode = Files.readString(testPath);
                 String fixedTest = fixTest(sourcePath.toString(), sourceCode, testPath.toString(), currentTestCode, lastError, model, skillContext);
+                if (fixedTest.equals(currentTestCode)) {
+                    continue;
+                }
                 Files.writeString(testPath, fixedTest);
             }
 
@@ -153,31 +157,33 @@ public class AutoTestSkill implements Skill {
     private String generateInitialTest(String sourcePath, String sourceCode, String testPath, String model, String skillContext) {
         String prompt = TestPromptBuilder.buildInitialPrompt(sourcePath, sourceCode, testPath);
         String raw = askModel(prompt, model, skillContext);
-        return extractJavaCodeOrFallback(raw, sourceCode, testPath);
+        if (raw == null || raw.isBlank()) {
+            raw = askModel(prompt, model, skillContext);
+        }
+        if (raw == null || raw.isBlank()) {
+            throw new IllegalStateException("AI returned empty response after 2 attempts");
+        }
+        return extractCodeOrThrow(raw);
     }
 
     private String fixTest(String sourcePath, String sourceCode, String testPath, String currentTestCode, String errorLog, String model, String skillContext) {
         String prompt = TestPromptBuilder.buildFixPrompt(sourcePath, sourceCode, testPath, currentTestCode, errorLog);
         String raw = askModel(prompt, model, skillContext);
-        return extractJavaCodeOrFallback(raw, sourceCode, testPath);
+        if (raw == null || raw.isBlank()) {
+            return currentTestCode;
+        }
+        try {
+            return extractCodeOrThrow(raw);
+        } catch (Exception e) {
+            return currentTestCode;
+        }
     }
 
     private String askModel(String prompt, String model, String skillContext) {
-        StringBuilder content = new StringBuilder();
-        aiService.setMessageHandler(message -> {
-            if (message != null && "assistant".equals(message.getRole()) && message.getContent() != null) {
-                content.append(message.getContent());
-            }
-        });
-        aiService.setToolCallHandler(toolCall -> {
-            // Skill output is text-only; ignore tool calls from the model here.
-        });
-        ArrayList<ChatMessage> history = new ArrayList<>();
-        if (skillContext != null && !skillContext.isBlank()) {
-            history.add(new ChatMessage("system", skillContext));
-        }
-        aiService.streamingChat(prompt, history, model);
-        return content.toString();
+        String systemPrompt = (skillContext != null && !skillContext.isBlank())
+                ? skillContext
+                : "You are a professional test code generator. Output ONLY the test code in a single markdown code block. No explanations.";
+        return aiService.directChat(systemPrompt, prompt, model);
     }
 
     private ToolResult runTargetTest(Path testPath) {
@@ -315,40 +321,35 @@ public class AutoTestSkill implements Skill {
         return matcher.find() ? matcher.group(1) : null;
     }
 
-    private String extractJavaCodeOrFallback(String modelOutput, String sourceCode, String testPath) {
-        if (modelOutput != null) {
-            Matcher javaMatcher = CODE_BLOCK_PATTERN.matcher(modelOutput);
-            if (javaMatcher.find()) {
-                return javaMatcher.group(1).trim() + System.lineSeparator();
-            }
-            // For other languages, try to extract any code block
-            Matcher anyCodeMatcher = Pattern.compile("```\\w*\\s*([\\s\\S]*?)```").matcher(modelOutput);
-            if (anyCodeMatcher.find()) {
-                return anyCodeMatcher.group(1).trim() + System.lineSeparator();
-            }
-            if (modelOutput.contains("class ") || modelOutput.contains("def ") || modelOutput.contains("func ")) {
-                return modelOutput.trim() + System.lineSeparator();
-            }
+    private String extractCodeOrThrow(String modelOutput) {
+        if (modelOutput == null || modelOutput.isBlank()) {
+            throw new IllegalStateException("AI returned empty response, cannot extract code");
         }
-        return buildFallbackTest(sourceCode, testPath);
-    }
 
-    private String buildFallbackTest(String sourceCode, String testPath) {
-        String packageName = extractPackageName(sourceCode);
-        String testClassName = Paths.get(testPath).getFileName().toString().replace(".java", "");
-        StringBuilder sb = new StringBuilder();
-        if (!packageName.isBlank()) {
-            sb.append("package ").append(packageName).append(";\n\n");
+        Matcher javaMatcher = CODE_BLOCK_PATTERN.matcher(modelOutput);
+        if (javaMatcher.find()) {
+            return javaMatcher.group(1).trim() + System.lineSeparator();
         }
-        sb.append("import org.junit.jupiter.api.Test;\n")
-          .append("import static org.junit.jupiter.api.Assertions.assertTrue;\n\n")
-          .append("class ").append(testClassName).append(" {\n")
-          .append("    @Test\n")
-          .append("    void generatedPlaceholder() {\n")
-          .append("        assertTrue(true);\n")
-          .append("    }\n")
-          .append("}\n");
-        return sb.toString();
+
+        Matcher anyCodeMatcher = Pattern.compile("```\\w*\\s*([\\s\\S]*?)```").matcher(modelOutput);
+        if (anyCodeMatcher.find()) {
+            return anyCodeMatcher.group(1).trim() + System.lineSeparator();
+        }
+
+        if (modelOutput.contains("class ") || modelOutput.contains("def ") || modelOutput.contains("func ")) {
+            return modelOutput.trim() + System.lineSeparator();
+        }
+
+        String cleaned = modelOutput
+                .replaceAll("(?m)^\\s*(?:#|//|/\\*|\\*|>|\\-\\s).*$", "")
+                .replaceAll("(?m)^[A-Z].*[:：].*$", "")
+                .trim();
+        if (cleaned.contains("class ") || cleaned.contains("def ") || cleaned.contains("func ")) {
+            return cleaned + System.lineSeparator();
+        }
+
+        throw new IllegalStateException("Failed to extract code from AI response. Response summary: "
+                + modelOutput.substring(0, Math.min(300, modelOutput.length())));
     }
 
     private String shrinkLog(String log, AutoTestOptions options) {

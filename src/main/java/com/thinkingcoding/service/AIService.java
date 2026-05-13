@@ -58,4 +58,15 @@ public interface AIService {
      * @return 可用模型名称的字符串列表
      */
     List<String> getAvailableModels();
+
+    /**
+     * 直接调用模型，不注入Agent上下文和工具列表。
+     * 适用于 Skill 内部需要干净模型响应的场景（如代码生成）。
+     *
+     * @param systemPrompt 系统提示
+     * @param userPrompt 用户提示
+     * @param modelName 模型名称
+     * @return 模型完整文本响应
+     */
+    String directChat(String systemPrompt, String userPrompt, String modelName);
 }
