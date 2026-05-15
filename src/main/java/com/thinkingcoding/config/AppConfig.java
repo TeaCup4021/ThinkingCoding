@@ -459,6 +459,9 @@ public class AppConfig {
         @JsonProperty("codeGraph")
         private Map<String, Object> codeGraph = new HashMap<>();
 
+        @JsonProperty("pgvector")
+        private PgVectorConfig pgvector = new PgVectorConfig();
+
         public RagCloudConfig getCloud() {
             if (cloud == null) {
                 cloud = new RagCloudConfig();
@@ -531,6 +534,42 @@ public class AppConfig {
 
         public int getChunkOverlap() { return chunkOverlap; }
         public void setChunkOverlap(int chunkOverlap) { this.chunkOverlap = chunkOverlap; }
+
+        public PgVectorConfig getPgvector() {
+            if (pgvector == null) pgvector = new PgVectorConfig();
+            return pgvector;
+        }
+        public void setPgvector(PgVectorConfig pgvector) { this.pgvector = pgvector; }
+    }
+
+    public static class PgVectorConfig {
+        @JsonProperty("host") private String host = "localhost";
+        @JsonProperty("port") private int port = 5432;
+        @JsonProperty("database") private String database = "thinkingcoding";
+        @JsonProperty("schema") private String schema = "public";
+        @JsonProperty("user") private String user = "postgres";
+        @JsonProperty("password") private String password;
+        @JsonProperty("url") private String url;
+
+        public String getHost() { return host; }
+        public void setHost(String host) { this.host = host; }
+        public int getPort() { return port; }
+        public void setPort(int port) { this.port = port; }
+        public String getDatabase() { return database; }
+        public void setDatabase(String database) { this.database = database; }
+        public String getSchema() { return schema; }
+        public void setSchema(String schema) { this.schema = schema; }
+        public String getUser() { return user; }
+        public void setUser(String user) { this.user = user; }
+        public String getPassword() { return password; }
+        public void setPassword(String password) { this.password = password; }
+        public String getUrl() { return url; }
+        public void setUrl(String url) { this.url = url; }
+
+        public String buildJdbcUrl() {
+            if (url != null && !url.isBlank()) return url;
+            return "jdbc:postgresql://" + host + ":" + port + "/" + database;
+        }
     }
 
     @Data

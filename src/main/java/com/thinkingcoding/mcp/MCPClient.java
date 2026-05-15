@@ -32,10 +32,12 @@ public class MCPClient {
     private static final int MAX_ERROR_LINES = 20;
     private static final int GITHUB_CONNECT_TIMEOUT_SECONDS = 20;
     private static final int GITHUB_REQUEST_TIMEOUT_SECONDS = 30;
+    // 使用 Jackson 的 ObjectMapper 来处理 JSON 序列化和反序列化
     private final ObjectMapper objectMapper = new ObjectMapper();
     private Process process;
     private BufferedReader reader;
     private BufferedWriter writer;
+    // 存储可用工具，key是工具名称，value是工具详情
     private final Map<String, MCPTool> availableTools = new ConcurrentHashMap<>();
     private final Deque<String> recentErrorLines = new ArrayDeque<>();
     private String githubToken;
@@ -46,6 +48,14 @@ public class MCPClient {
         this.serverName = serverName;
     }
 
+    /**
+     *
+     * 连接到MCP服务器，启动进程并进行协议初始化
+     *
+     * @param fullCommand
+     * @param args
+     * @return
+     */
     public boolean connect(String fullCommand, List<String> args) {
         try {
             validateGithubTokenArgs(args);
@@ -209,18 +219,24 @@ public class MCPClient {
         }
     }
 
+    /**
+     * 请求工具列表并解析，存储到 availableTools 中
+     * @throws IOException
+     */
     private void listTools() throws IOException {
         MCPRequest request = new MCPRequest("tools/list", Map.of());
         sendRequest(request);
 
         MCPResponse response = readResponse(getListToolsTimeoutMillis());
         if (response != null && response.getResult() != null) {
+            // 解析工具列表，String是工具名称，Object是工具详情（包含描述、输入输出等）
             Map<String, Object> result = (Map<String, Object>) response.getResult();
             List<Map<String, Object>> toolsList = (List<Map<String, Object>>) result.get("tools");
 
             if (toolsList != null) {
                 for (Map<String, Object> toolData : toolsList) {
                     try {
+                        //  直接转换为 MCPTool 对象，确保字段正确映射
                         MCPTool tool = objectMapper.convertValue(toolData, MCPTool.class);
                         availableTools.put(tool.getName(), tool);
                         log.debug("发现工具: {} - {}", tool.getName(), tool.getDescription());

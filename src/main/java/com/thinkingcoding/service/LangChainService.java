@@ -380,7 +380,11 @@ public class LangChainService implements AIService {
         return specifications;
     }
 
-
+    /** 根据工具定义解析输入参数的 JSON Schema，支持用户自定义 schema 或内置默认 schema。
+     * 解析失败时降级到默认 schema，确保工具调用的基本功能可用。
+     * @param tool
+     * @return
+     */
     private JsonObjectSchema resolveToolSchema(BaseTool tool) {
         Object inputSchema = tool.getInputSchema();
         if (inputSchema != null) {
@@ -427,6 +431,11 @@ public class LangChainService implements AIService {
         return JsonObjectSchema.builder().additionalProperties(true).build();
     }
 
+    /**
+     * 将用户定义的工具输入参数 schema（通常是一个 Map）转换为 LangChain4j 的 JsonObjectSchema 对象。
+     * @param schemaMap
+     * @return
+     */
     private JsonObjectSchema toJsonObjectSchema(Map<String, Object> schemaMap) {
         JsonObjectSchema.Builder builder = JsonObjectSchema.builder();
 
@@ -435,6 +444,7 @@ public class LangChainService implements AIService {
             builder.description(String.valueOf(description));
         }
 
+        // 属性
         Object properties = schemaMap.get("properties");
         if (properties instanceof Map<?, ?> propsMap) {
             for (Map.Entry<?, ?> entry : propsMap.entrySet()) {
@@ -450,7 +460,7 @@ public class LangChainService implements AIService {
         } else if (required instanceof String[] requiredArray) {
             builder.required(requiredArray);
         }
-
+        //
         Object additionalProperties = schemaMap.get("additionalProperties");
         if (additionalProperties instanceof Boolean flag) {
             builder.additionalProperties(flag);

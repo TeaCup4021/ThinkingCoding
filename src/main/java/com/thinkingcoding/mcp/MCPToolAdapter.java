@@ -25,6 +25,11 @@ public class MCPToolAdapter extends BaseTool {
         this.mcpClient = mcpClient;
     }
 
+    /**
+     * 执行MCP工具，输入参数可以是JSON字符串或普通字符串
+     * @param input
+     * @return
+     */
     @Override
     public ToolResult execute(String input) {
         long startTime = System.currentTimeMillis();

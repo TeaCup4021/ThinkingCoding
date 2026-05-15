@@ -15,7 +15,11 @@ import com.thinkingcoding.tools.exec.CodeExecutorTool;
 import com.thinkingcoding.tools.exec.CommandExecutorTool;
 import com.thinkingcoding.tools.file.FileManagerTool;
 import com.thinkingcoding.tools.rag.CodeGraphTool;
+import com.thinkingcoding.tools.rag.GraphSearchTool;
 import com.thinkingcoding.tools.rag.SemanticSearchTool;
+import com.thinkingcoding.rag.embedding.EmbeddingService;
+import com.thinkingcoding.rag.embedding.GraphEmbeddingStore;
+import com.thinkingcoding.rag.embedding.GraphEmbeddingIndexer;
 import com.thinkingcoding.tools.search.GrepSearchTool;
 import com.thinkingcoding.tools.todo.AgentTodoTool;
 import com.thinkingcoding.ui.ThinkingCodingUI;
@@ -53,6 +57,11 @@ public class ThinkingCodingContext {
     // 🔥 新增上下文管理器
     private final ContextManager contextManager;
 
+    // 🔥 新增图谱嵌入相关组件
+    private final GraphEmbeddingStore graphEmbeddingStore;
+    private final EmbeddingService embeddingService;
+    private final GraphEmbeddingIndexer graphEmbeddingIndexer;
+
     private ThinkingCodingContext(Builder builder) {
         this.appConfig = builder.appConfig;
         this.mcpConfig = builder.mcpConfig;
@@ -64,6 +73,9 @@ public class ThinkingCodingContext {
         this.mcpService = builder.mcpService;
         this.mcpToolManager = builder.mcpToolManager;
         this.contextManager = builder.contextManager;
+        this.graphEmbeddingStore = builder.graphEmbeddingStore;
+        this.embeddingService = builder.embeddingService;
+        this.graphEmbeddingIndexer = builder.graphEmbeddingIndexer;
     }
 
     public static ThinkingCodingContext initialize() {
@@ -109,6 +121,63 @@ public class ThinkingCodingContext {
             toolRegistry.register(new SemanticSearchTool(appConfig, mcpService));
         }
 
+        // 🔥 初始化图谱嵌入组件 (Embedding + pgvector)
+        EmbeddingService embeddingService = null;
+        GraphEmbeddingStore graphEmbeddingStore = null;
+        GraphEmbeddingIndexer graphEmbeddingIndexer = null;
+
+        if (appConfig.getRag() != null && appConfig.getRag().isEnabled()
+                && appConfig.getRag().getPgvector() != null) {
+            try {
+                String modelName = appConfig.getRag().getEmbeddingModel();
+                if (modelName == null || modelName.isBlank()) modelName = "text-embedding-3-large";
+                String baseUrl = appConfig.getRag().getBaseUrl();
+                String apiKey = appConfig.getRag().getApiKey();
+
+                if (baseUrl != null && !baseUrl.isBlank() && apiKey != null && !apiKey.isBlank()) {
+                    embeddingService = new EmbeddingService(baseUrl, apiKey, modelName);
+                    graphEmbeddingStore = new GraphEmbeddingStore(appConfig.getRag().getPgvector(), 3072);
+                    graphEmbeddingStore.ensureTable();
+
+                    graphEmbeddingIndexer = new GraphEmbeddingIndexer(
+                            mcpService,
+                            appConfig.getRag().getGitnexus().getServerName(),
+                            appConfig.getRag().getGitnexus().getRepo(),
+                            embeddingService,
+                            graphEmbeddingStore,
+                            java.nio.file.Path.of(appConfig.getRag().getWorkspace() != null
+                                    ? appConfig.getRag().getWorkspace()
+                                    : System.getProperty("user.dir"))
+                    );
+
+                    // 注册 graph_search 工具
+                    toolRegistry.register(new GraphSearchTool(appConfig, graphEmbeddingStore, embeddingService));
+
+                    System.out.println("✅ 图谱嵌入组件初始化成功 (model: " + modelName + ")");
+
+                    // 启动时检测过期
+                    String currentCommit = getGitHeadCommit();
+                    if (currentCommit != null && graphEmbeddingIndexer.isStale(currentCommit)) {
+                        System.out.println("⚠️  代码已变更，图谱嵌入可能过期。运行 /rag index 更新索引。");
+                    }
+
+                    // 表为空则后台异步索引
+                    final GraphEmbeddingIndexer indexer = graphEmbeddingIndexer;
+                    final String commit = currentCommit;
+                    if (graphEmbeddingStore.isEmpty() && commit != null) {
+                        new Thread(() -> {
+                            System.out.println("🔄 后台异步构建图谱嵌入索引...");
+                            GraphEmbeddingIndexer.IndexResult result = indexer.indexAll(commit);
+                            System.out.println("✅ 索引完成: " + result.indexed() + " 个符号, "
+                                    + result.skipped() + " 跳过, " + result.failed() + " 失败");
+                        }, "graph-embedding-indexer").start();
+                    }
+                }
+            } catch (Exception e) {
+                System.err.println("⚠️  图谱嵌入组件初始化失败: " + e.getMessage());
+            }
+        }
+
         // 🔥 初始化 MCP 服务（如果启用）
         if (mcpConfig != null && mcpConfig.isEnabled()) {
             initializeMCPTools(appConfig, mcpConfig, mcpService, toolRegistry);
@@ -147,6 +216,9 @@ public class ThinkingCodingContext {
                 .mcpService(mcpService)
                 .mcpToolManager(mcpToolManager)
                 .contextManager(contextManager)  // 🔥 添加 contextManager
+                .embeddingService(embeddingService)
+                .graphEmbeddingStore(graphEmbeddingStore)
+                .graphEmbeddingIndexer(graphEmbeddingIndexer)
                 .build();
     }
 
@@ -197,6 +269,20 @@ public class ThinkingCodingContext {
      * 🔥 初始化并注册 Skills
      * 将配置的 skills 注册为 AI 可调用的工具
      */
+    private static String getGitHeadCommit() {
+        try {
+            ProcessBuilder pb = new ProcessBuilder("git", "rev-parse", "HEAD");
+            pb.redirectErrorStream(true);
+            java.io.BufferedReader reader = new java.io.BufferedReader(
+                    new java.io.InputStreamReader(pb.start().getInputStream()));
+            String line = reader.readLine();
+            reader.close();
+            return (line != null && !line.isBlank()) ? line.trim() : null;
+        } catch (Exception ignored) {
+            return null;
+        }
+    }
+
     private static void initializeSkills(AppConfig appConfig, AIService aiService, ToolRegistry toolRegistry) {
         if (appConfig == null || appConfig.getSkills() == null || appConfig.getSkills().isEmpty()) {
             return;
@@ -353,6 +439,10 @@ public class ThinkingCodingContext {
         return mcpService != null ? mcpService.getMCPTools().size() : 0;
     }
 
+    public GraphEmbeddingStore getGraphEmbeddingStore() { return graphEmbeddingStore; }
+    public EmbeddingService getEmbeddingService() { return embeddingService; }
+    public GraphEmbeddingIndexer getGraphEmbeddingIndexer() { return graphEmbeddingIndexer; }
+
     // Builder模式
     public static class Builder {
         private AppConfig appConfig;
@@ -367,6 +457,10 @@ public class ThinkingCodingContext {
         private MCPToolManager mcpToolManager;
         // 🔥 新增上下文管理器字段
         private ContextManager contextManager;
+        // 🔥 新增图谱嵌入字段
+        private GraphEmbeddingStore graphEmbeddingStore;
+        private EmbeddingService embeddingService;
+        private GraphEmbeddingIndexer graphEmbeddingIndexer;
 
         public Builder appConfig(AppConfig appConfig) {
             this.appConfig = appConfig;
@@ -417,6 +511,21 @@ public class ThinkingCodingContext {
         // 🔥 新增 contextManager Builder 方法
         public Builder contextManager(ContextManager contextManager) {
             this.contextManager = contextManager;
+            return this;
+        }
+
+        public Builder graphEmbeddingStore(GraphEmbeddingStore store) {
+            this.graphEmbeddingStore = store;
+            return this;
+        }
+
+        public Builder embeddingService(EmbeddingService svc) {
+            this.embeddingService = svc;
+            return this;
+        }
+
+        public Builder graphEmbeddingIndexer(GraphEmbeddingIndexer indexer) {
+            this.graphEmbeddingIndexer = indexer;
             return this;
         }
 
