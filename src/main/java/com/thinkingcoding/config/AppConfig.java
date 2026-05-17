@@ -433,10 +433,15 @@ public class AppConfig {
         private int topK = 5;
 
         @JsonProperty("baseUrl")
+        @com.fasterxml.jackson.annotation.JsonAlias({"baseURL", "base_url", "baseurl"})
         private String baseUrl;
 
         @JsonProperty("embeddingModel")
+        @com.fasterxml.jackson.annotation.JsonAlias({"embedding_model", "embeddingmodel"})
         private String embeddingModel;
+
+        @JsonProperty("dimensions")
+        private int dimensions = 0;  // 0 = 使用模型默认值
 
         @JsonProperty("chunkSize")
         private int chunkSize = 1000;
@@ -528,6 +533,9 @@ public class AppConfig {
 
         public String getEmbeddingModel() { return embeddingModel; }
         public void setEmbeddingModel(String embeddingModel) { this.embeddingModel = embeddingModel; }
+
+        public int getDimensions() { return dimensions; }
+        public void setDimensions(int dimensions) { this.dimensions = dimensions; }
 
         public int getChunkSize() { return chunkSize; }
         public void setChunkSize(int chunkSize) { this.chunkSize = chunkSize; }
