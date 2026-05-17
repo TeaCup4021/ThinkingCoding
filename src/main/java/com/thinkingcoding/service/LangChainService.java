@@ -5,6 +5,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.thinkingcoding.config.AppConfig;
 import com.thinkingcoding.model.ChatMessage;
 import com.thinkingcoding.model.ToolCall;
+import com.thinkingcoding.rag.retrieval.RagContextEnricher;
 import com.thinkingcoding.tools.BaseTool;
 import com.thinkingcoding.tools.ToolRegistry;
 import dev.langchain4j.agent.tool.ToolExecutionRequest;
@@ -22,6 +23,8 @@ import dev.langchain4j.model.chat.request.json.JsonStringSchema;
 import dev.langchain4j.model.chat.response.ChatResponse;
 import dev.langchain4j.model.chat.response.StreamingChatResponseHandler;
 import dev.langchain4j.model.openai.OpenAiStreamingChatModel;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -44,11 +47,13 @@ import java.util.stream.Collectors;
  * - 不再依赖正则解析文本命令
  */
 public class LangChainService implements AIService {
+    private static final Logger log = LoggerFactory.getLogger(LangChainService.class);
     private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
 
     private final AppConfig appConfig;
     private final ToolRegistry toolRegistry;
     private final ContextManager contextManager;
+    private final RagContextEnricher ragEnricher;
     private Consumer<ChatMessage> messageHandler;
     private Consumer<ToolCall> toolCallHandler;
     private StreamingChatModel streamingChatModel;
@@ -56,10 +61,12 @@ public class LangChainService implements AIService {
     private volatile boolean isGenerating = false;
     private volatile boolean shouldStop = false;
 
-    public LangChainService(AppConfig appConfig, ToolRegistry toolRegistry, ContextManager contextManager) {
+    public LangChainService(AppConfig appConfig, ToolRegistry toolRegistry,
+                            ContextManager contextManager, RagContextEnricher ragEnricher) {
         this.appConfig = appConfig;
         this.toolRegistry = toolRegistry;
         this.contextManager = contextManager;
+        this.ragEnricher = ragEnricher;
         initializeChatModel();
     }
 
@@ -542,6 +549,18 @@ public class LangChainService implements AIService {
             ChatMessage systemMsg = contextManager.buildProjectContextMessage();
             if (systemMsg != null) {
                 messages.add(dev.langchain4j.data.message.SystemMessage.from(systemMsg.getContent()));
+            }
+        }
+
+        // === Part 1.5: RAG Code Context — 从代码库检索到的相关代码 ===
+        if (ragEnricher != null && ragEnricher.isEnabled()) {
+            try {
+                String ragContext = ragEnricher.enrich(input);
+                if (ragContext != null && !ragContext.isBlank()) {
+                    messages.add(dev.langchain4j.data.message.SystemMessage.from(ragContext));
+                }
+            } catch (Exception e) {
+                log.warn("RAG enrichment failed silently: {}", e.getMessage());
             }
         }
 

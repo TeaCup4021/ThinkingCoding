@@ -21,7 +21,7 @@ import java.util.concurrent.atomic.AtomicInteger;
  */
 public class GraphEmbeddingIndexer {
     private static final Logger log = LoggerFactory.getLogger(GraphEmbeddingIndexer.class);
-    private static final int BATCH_SIZE = 15;
+    private static final int BATCH_SIZE = 10;
 
     private final MCPService mcpService;
     private final String gitNexusServer;

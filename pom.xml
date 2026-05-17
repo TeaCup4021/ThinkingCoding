@@ -117,12 +117,6 @@
       <scope>provided</scope>
     </dependency>
 
-    <!-- Java AST parsing for code graph indexing -->
-    <dependency>
-      <groupId>com.github.javaparser</groupId>
-      <artifactId>javaparser-core</artifactId>
-      <version>3.25.10</version>
-    </dependency>
 
 
     <!-- Testing -->

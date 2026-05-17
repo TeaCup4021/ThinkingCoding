@@ -433,10 +433,15 @@ public class AppConfig {
         private int topK = 5;
 
         @JsonProperty("baseUrl")
+        @com.fasterxml.jackson.annotation.JsonAlias({"baseURL", "base_url", "baseurl"})
         private String baseUrl;
 
         @JsonProperty("embeddingModel")
+        @com.fasterxml.jackson.annotation.JsonAlias({"embedding_model", "embeddingmodel"})
         private String embeddingModel;
+
+        @JsonProperty("dimensions")
+        private int dimensions = 0;  // 0 = 使用模型默认值
 
         @JsonProperty("chunkSize")
         private int chunkSize = 1000;
@@ -458,6 +463,18 @@ public class AppConfig {
 
         @JsonProperty("codeGraph")
         private Map<String, Object> codeGraph = new HashMap<>();
+
+        @JsonProperty("ragContextEnabled")
+        private boolean ragContextEnabled = true;
+
+        @JsonProperty("ragTopK")
+        private int ragTopK = 5;
+
+        @JsonProperty("ragMaxCodeChars")
+        private int ragMaxCodeChars = 8000;
+
+        @JsonProperty("ragMinSimilarity")
+        private double ragMinSimilarity = 0.5;
 
         @JsonProperty("pgvector")
         private PgVectorConfig pgvector = new PgVectorConfig();
@@ -523,11 +540,26 @@ public class AppConfig {
         public int getTopK() { return topK; }
         public void setTopK(int topK) { this.topK = topK; }
 
+        public boolean isRagContextEnabled() { return ragContextEnabled; }
+        public void setRagContextEnabled(boolean ragContextEnabled) { this.ragContextEnabled = ragContextEnabled; }
+
+        public int getRagTopK() { return ragTopK; }
+        public void setRagTopK(int ragTopK) { this.ragTopK = ragTopK; }
+
+        public int getRagMaxCodeChars() { return ragMaxCodeChars; }
+        public void setRagMaxCodeChars(int ragMaxCodeChars) { this.ragMaxCodeChars = ragMaxCodeChars; }
+
+        public double getRagMinSimilarity() { return ragMinSimilarity; }
+        public void setRagMinSimilarity(double ragMinSimilarity) { this.ragMinSimilarity = ragMinSimilarity; }
+
         public String getBaseUrl() { return baseUrl; }
         public void setBaseUrl(String baseUrl) { this.baseUrl = baseUrl; }
 
         public String getEmbeddingModel() { return embeddingModel; }
         public void setEmbeddingModel(String embeddingModel) { this.embeddingModel = embeddingModel; }
+
+        public int getDimensions() { return dimensions; }
+        public void setDimensions(int dimensions) { this.dimensions = dimensions; }
 
         public int getChunkSize() { return chunkSize; }
         public void setChunkSize(int chunkSize) { this.chunkSize = chunkSize; }

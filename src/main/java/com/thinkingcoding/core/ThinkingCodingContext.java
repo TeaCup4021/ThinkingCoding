@@ -20,6 +20,7 @@ import com.thinkingcoding.tools.rag.SemanticSearchTool;
 import com.thinkingcoding.rag.embedding.EmbeddingService;
 import com.thinkingcoding.rag.embedding.GraphEmbeddingStore;
 import com.thinkingcoding.rag.embedding.GraphEmbeddingIndexer;
+import com.thinkingcoding.rag.retrieval.RagContextEnricher;
 import com.thinkingcoding.tools.search.GrepSearchTool;
 import com.thinkingcoding.tools.todo.AgentTodoTool;
 import com.thinkingcoding.ui.ThinkingCodingUI;
@@ -135,8 +136,10 @@ public class ThinkingCodingContext {
                 String apiKey = appConfig.getRag().getApiKey();
 
                 if (baseUrl != null && !baseUrl.isBlank() && apiKey != null && !apiKey.isBlank()) {
+                    int dims = appConfig.getRag().getDimensions();
+                    if (dims <= 0) dims = resolveDefaultDimensions(modelName);
                     embeddingService = new EmbeddingService(baseUrl, apiKey, modelName);
-                    graphEmbeddingStore = new GraphEmbeddingStore(appConfig.getRag().getPgvector(), 3072);
+                    graphEmbeddingStore = new GraphEmbeddingStore(appConfig.getRag().getPgvector(), dims);
                     graphEmbeddingStore.ensureTable();
 
                     graphEmbeddingIndexer = new GraphEmbeddingIndexer(
@@ -154,33 +157,51 @@ public class ThinkingCodingContext {
                     toolRegistry.register(new GraphSearchTool(appConfig, graphEmbeddingStore, embeddingService));
 
                     System.out.println("✅ 图谱嵌入组件初始化成功 (model: " + modelName + ")");
-
-                    // 启动时检测过期
-                    String currentCommit = getGitHeadCommit();
-                    if (currentCommit != null && graphEmbeddingIndexer.isStale(currentCommit)) {
-                        System.out.println("⚠️  代码已变更，图谱嵌入可能过期。运行 /rag index 更新索引。");
-                    }
-
-                    // 表为空则后台异步索引
-                    final GraphEmbeddingIndexer indexer = graphEmbeddingIndexer;
-                    final String commit = currentCommit;
-                    if (graphEmbeddingStore.isEmpty() && commit != null) {
-                        new Thread(() -> {
-                            System.out.println("🔄 后台异步构建图谱嵌入索引...");
-                            GraphEmbeddingIndexer.IndexResult result = indexer.indexAll(commit);
-                            System.out.println("✅ 索引完成: " + result.indexed() + " 个符号, "
-                                    + result.skipped() + " 跳过, " + result.failed() + " 失败");
-                        }, "graph-embedding-indexer").start();
-                    }
                 }
             } catch (Exception e) {
                 System.err.println("⚠️  图谱嵌入组件初始化失败: " + e.getMessage());
             }
         }
 
-        // 🔥 初始化 MCP 服务（如果启用）
+        // 🔥 创建 RAG 上下文增强器（自动注入相关代码到 LLM 提示）
+        RagContextEnricher ragEnricher = null;
+        if (embeddingService != null && graphEmbeddingStore != null && mcpService != null
+                && appConfig.getRag() != null) {
+            ragEnricher = new RagContextEnricher(
+                    embeddingService,
+                    graphEmbeddingStore,
+                    mcpService,
+                    appConfig.getRag().getGitnexus().getServerName(),
+                    java.nio.file.Path.of(appConfig.getRag().getWorkspace() != null
+                            ? appConfig.getRag().getWorkspace()
+                            : System.getProperty("user.dir")),
+                    appConfig.getRag()
+            );
+            System.out.println("✅ RAG 上下文增强器初始化成功 (topK="
+                    + appConfig.getRag().getRagTopK() + ")");
+        }
+
+        // 🔥 初始化 MCP 服务（如果启用）— 必须在异步索引之前
         if (mcpConfig != null && mcpConfig.isEnabled()) {
             initializeMCPTools(appConfig, mcpConfig, mcpService, toolRegistry);
+        }
+
+        // 🔥 MCP 就绪后，触发图谱嵌入的过期检测和异步索引
+        if (graphEmbeddingIndexer != null && graphEmbeddingStore != null) {
+            String currentCommit = getGitHeadCommit();
+            if (currentCommit != null && graphEmbeddingIndexer.isStale(currentCommit)) {
+                System.out.println("⚠️  代码已变更，图谱嵌入可能过期。运行 /rag index 更新索引。");
+            }
+            final GraphEmbeddingIndexer indexer = graphEmbeddingIndexer;
+            final String commit = currentCommit;
+            if (graphEmbeddingStore.isEmpty() && commit != null) {
+                new Thread(() -> {
+                    System.out.println("🔄 后台异步构建图谱嵌入索引...");
+                    GraphEmbeddingIndexer.IndexResult result = indexer.indexAll(commit);
+                    System.out.println("✅ 索引完成: " + result.indexed() + " 个符号, "
+                            + result.skipped() + " 跳过, " + result.failed() + " 失败");
+                }, "graph-embedding-indexer").start();
+            }
         }
 
         // 服务层初始化
@@ -194,7 +215,7 @@ public class ThinkingCodingContext {
             contextManager.setAvailableSkills(enabledSkills);
         }
         
-        AIService aiService = new LangChainService(appConfig, toolRegistry, contextManager);  // 🔥 注入 contextManager
+        AIService aiService = new LangChainService(appConfig, toolRegistry, contextManager, ragEnricher);
         SessionService sessionService = new SessionService();
         PerformanceMonitor performanceMonitor = new PerformanceMonitor();
 
@@ -269,6 +290,16 @@ public class ThinkingCodingContext {
      * 🔥 初始化并注册 Skills
      * 将配置的 skills 注册为 AI 可调用的工具
      */
+    private static int resolveDefaultDimensions(String modelName) {
+        if (modelName == null) return 1024;
+        String m = modelName.toLowerCase();
+        if (m.contains("text-embedding-3-large")) return 3072;
+        if (m.contains("text-embedding-3-small")) return 1536;
+        if (m.contains("text-embedding-v4") || m.contains("qwen")) return 1024;
+        if (m.contains("bge-m3")) return 1024;
+        return 1024; // 默认
+    }
+
     private static String getGitHeadCommit() {
         try {
             ProcessBuilder pb = new ProcessBuilder("git", "rev-parse", "HEAD");
