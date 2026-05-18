@@ -675,6 +675,9 @@ public class AppConfig {
         @JsonProperty("autoConnect")
         private boolean autoConnect = true;
 
+        @JsonProperty("stalenessCheck")
+        private StalenessCheckConfig stalenessCheck = new StalenessCheckConfig();
+
         public String getServerName() {
             return serverName;
         }
@@ -706,5 +709,49 @@ public class AppConfig {
         public void setAutoConnect(boolean autoConnect) {
             this.autoConnect = autoConnect;
         }
+
+        public StalenessCheckConfig getStalenessCheck() {
+            if (stalenessCheck == null) {
+                stalenessCheck = new StalenessCheckConfig();
+            }
+            return stalenessCheck;
+        }
+
+        public void setStalenessCheck(StalenessCheckConfig stalenessCheck) {
+            this.stalenessCheck = stalenessCheck;
+        }
+    }
+
+    @Data
+    public static class StalenessCheckConfig {
+        @JsonProperty("enabled")
+        private boolean enabled = true;
+
+        @JsonProperty("cacheTtlSeconds")
+        private long cacheTtlSeconds = 60;
+
+        @JsonProperty("analyzeTimeoutSeconds")
+        private long analyzeTimeoutSeconds = 180;
+
+        @JsonProperty("statusCommand")
+        private String statusCommand = "npx gitnexus status";
+
+        @JsonProperty("analyzeCommand")
+        private String analyzeCommand = "npx gitnexus analyze";
+
+        public boolean isEnabled() { return enabled; }
+        public void setEnabled(boolean enabled) { this.enabled = enabled; }
+
+        public long getCacheTtlSeconds() { return cacheTtlSeconds > 0 ? cacheTtlSeconds : 60; }
+        public void setCacheTtlSeconds(long cacheTtlSeconds) { this.cacheTtlSeconds = cacheTtlSeconds; }
+
+        public long getAnalyzeTimeoutSeconds() { return analyzeTimeoutSeconds > 0 ? analyzeTimeoutSeconds : 180; }
+        public void setAnalyzeTimeoutSeconds(long analyzeTimeoutSeconds) { this.analyzeTimeoutSeconds = analyzeTimeoutSeconds; }
+
+        public String getStatusCommand() { return statusCommand; }
+        public void setStatusCommand(String statusCommand) { this.statusCommand = statusCommand; }
+
+        public String getAnalyzeCommand() { return analyzeCommand; }
+        public void setAnalyzeCommand(String analyzeCommand) { this.analyzeCommand = analyzeCommand; }
     }
 }

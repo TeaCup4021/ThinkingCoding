@@ -2,6 +2,7 @@ package com.thinkingcoding.rag;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.thinkingcoding.config.AppConfig;
+import com.thinkingcoding.mcp.GitNexusStalenessChecker;
 import com.thinkingcoding.mcp.MCPService;
 import com.thinkingcoding.model.ToolResult;
 import com.thinkingcoding.tools.rag.SemanticSearchTool;
@@ -22,11 +23,16 @@ public class SemanticSearchToolTest {
     private SemanticSearchTool tool;
     private MCPService mockMcp;
     private AppConfig mockConfig;
+    private GitNexusStalenessChecker mockStalenessChecker;
 
     @BeforeEach
     public void setUp() {
         mockMcp = mock(MCPService.class);
         mockConfig = mock(AppConfig.class);
+        mockStalenessChecker = mock(GitNexusStalenessChecker.class);
+
+        when(mockStalenessChecker.ensureFresh())
+                .thenReturn(GitNexusStalenessChecker.StalenessResult.FRESH);
 
         // 配置 mock config
         AppConfig.RagConfig ragConfig = new AppConfig.RagConfig();
@@ -36,7 +42,7 @@ public class SemanticSearchToolTest {
         AppConfig.ToolsConfig toolsConfig = new AppConfig.ToolsConfig();
         when(mockConfig.getTools()).thenReturn(toolsConfig);
 
-        tool = new SemanticSearchTool(mockConfig, mockMcp);
+        tool = new SemanticSearchTool(mockConfig, mockMcp, mockStalenessChecker);
     }
 
     @Test
@@ -55,7 +61,7 @@ public class SemanticSearchToolTest {
 
     @Test
     public void testNullMcpService() {
-        tool = new SemanticSearchTool(mockConfig, null);
+        tool = new SemanticSearchTool(mockConfig, null, mockStalenessChecker);
         ToolResult result = tool.execute("find auth");
         assertFalse(result.isSuccess());
         assertTrue(result.getError().contains("MCP service is not available"));
@@ -142,5 +148,30 @@ public class SemanticSearchToolTest {
         @SuppressWarnings("unchecked")
         Map<String, Object> schemaMap = (Map<String, Object>) schema;
         assertEquals("object", schemaMap.get("type"));
+    }
+
+    @Test
+    public void testStalenessFailure() {
+        when(mockStalenessChecker.ensureFresh())
+                .thenReturn(GitNexusStalenessChecker.StalenessResult
+                        .failed("GitNexus index is stale and auto-refresh failed."));
+
+        ToolResult result = tool.execute("find auth");
+        assertFalse(result.isSuccess());
+        assertTrue(result.getError().contains("stale"));
+        // MCP should NOT be called when staleness check fails
+        verify(mockMcp, never()).callTool(anyString(), anyString(), anyMap());
+    }
+
+    @Test
+    public void testStalenessFreshProceedsToMcp() {
+        when(mockStalenessChecker.ensureFresh())
+                .thenReturn(GitNexusStalenessChecker.StalenessResult.FRESH);
+        when(mockMcp.callTool(eq("gitnexus"), eq("query"), anyMap()))
+                .thenReturn(Collections.emptyMap());
+
+        ToolResult result = tool.execute("find auth");
+        // Should proceed to MCP call
+        verify(mockMcp, times(1)).callTool(eq("gitnexus"), eq("query"), anyMap());
     }
 }

@@ -7,6 +7,7 @@ import com.thinkingcoding.rag.codegraph.CodeGraphIndex;
 import com.thinkingcoding.rag.codegraph.CodeGraphSymbol;
 import com.thinkingcoding.rag.codegraph.ReferenceKind;
 import com.thinkingcoding.tools.BaseTool;
+import com.thinkingcoding.mcp.GitNexusStalenessChecker;
 import com.thinkingcoding.mcp.MCPService;
 import com.thinkingcoding.rag.codegraph.GitNexusCodeGraphMapper;
 import com.thinkingcoding.rag.codegraph.GitNexusCodeGraphMapper.GitNexusMappingResult;
@@ -26,10 +27,12 @@ public class CodeGraphTool extends BaseTool {
 
     private final AppConfig appConfig;
     private final MCPService mcpService;
+    private final GitNexusStalenessChecker stalenessChecker;
     private final ObjectMapper mapper = new ObjectMapper();
     private final GitNexusCodeGraphMapper graphMapper = new GitNexusCodeGraphMapper();
 
-    public CodeGraphTool(AppConfig appConfig, MCPService mcpService) {
+    public CodeGraphTool(AppConfig appConfig, MCPService mcpService,
+                         GitNexusStalenessChecker stalenessChecker) {
         super("code_graph",
               "Query the code graph to look up a symbol's definition, dependencies, public members, and callers via GitNexus. " +
               "Input: a symbol name (e.g., 'ThinkingCodingCommand') or file path. " +
@@ -40,6 +43,7 @@ public class CodeGraphTool extends BaseTool {
               "or reading file contents (use file_manager).");
         this.appConfig = appConfig;
         this.mcpService = mcpService;
+        this.stalenessChecker = stalenessChecker;
     }
 
     @Override
@@ -135,6 +139,16 @@ public class CodeGraphTool extends BaseTool {
     }
 
     private Object callGitNexus(String target, String repo, boolean includeTests, boolean refresh) {
+        if (stalenessChecker != null) {
+            if (refresh) {
+                stalenessChecker.invalidateCache();
+            }
+            GitNexusStalenessChecker.StalenessResult staleness = stalenessChecker.ensureFresh();
+            if (!staleness.canProceed()) {
+                throw new IllegalStateException(staleness.getErrorMessage());
+            }
+        }
+
         String serverName = resolveGitNexusServer();
         String toolName = resolveGitNexusTool();
 

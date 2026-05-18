@@ -3,6 +3,7 @@ package com.thinkingcoding.core;
 import com.thinkingcoding.config.AppConfig;
 import com.thinkingcoding.config.ConfigManager;
 import com.thinkingcoding.config.MCPConfig;
+import com.thinkingcoding.mcp.GitNexusStalenessChecker;
 import com.thinkingcoding.mcp.MCPService;
 import com.thinkingcoding.mcp.MCPToolManager;
 import com.thinkingcoding.service.AIService;
@@ -114,12 +115,15 @@ public class ThinkingCodingContext {
 
         toolRegistry.register(new AgentTodoTool());
 
+        // 创建 GitNexus 过期检测器，在 RAG 工具调用前自动检查索引是否过期
+        GitNexusStalenessChecker stalenessChecker = createStalenessChecker(appConfig);
+
         if (appConfig.getTools().getCodeGraph().isEnabled()) {
-            toolRegistry.register(new CodeGraphTool(appConfig, mcpService));
+            toolRegistry.register(new CodeGraphTool(appConfig, mcpService, stalenessChecker));
         }
 
         if (appConfig.getTools().getSemanticSearch().isEnabled()) {
-            toolRegistry.register(new SemanticSearchTool(appConfig, mcpService));
+            toolRegistry.register(new SemanticSearchTool(appConfig, mcpService, stalenessChecker));
         }
 
         // 🔥 初始化图谱嵌入组件 (Embedding + pgvector)
@@ -312,6 +316,24 @@ public class ThinkingCodingContext {
         } catch (Exception ignored) {
             return null;
         }
+    }
+
+    private static GitNexusStalenessChecker createStalenessChecker(AppConfig appConfig) {
+        String workspace = null;
+        if (appConfig != null && appConfig.getRag() != null) {
+            workspace = appConfig.getRag().getWorkspace();
+        }
+        if (workspace == null || workspace.isBlank()) {
+            workspace = System.getProperty("user.dir");
+        }
+
+        AppConfig.StalenessCheckConfig config = null;
+        if (appConfig != null && appConfig.getRag() != null
+                && appConfig.getRag().getGitnexus() != null) {
+            config = appConfig.getRag().getGitnexus().getStalenessCheck();
+        }
+
+        return new GitNexusStalenessChecker(config, workspace);
     }
 
     private static void initializeSkills(AppConfig appConfig, AIService aiService, ToolRegistry toolRegistry) {

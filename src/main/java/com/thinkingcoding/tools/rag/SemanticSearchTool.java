@@ -2,6 +2,7 @@ package com.thinkingcoding.tools.rag;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.thinkingcoding.config.AppConfig;
+import com.thinkingcoding.mcp.GitNexusStalenessChecker;
 import com.thinkingcoding.mcp.MCPService;
 import com.thinkingcoding.model.ToolResult;
 import com.thinkingcoding.tools.BaseTool;
@@ -25,9 +26,11 @@ public class SemanticSearchTool extends BaseTool {
 
     private final AppConfig appConfig;
     private final MCPService mcpService;
+    private final GitNexusStalenessChecker stalenessChecker;
     private final ObjectMapper mapper = new ObjectMapper();
 
-    public SemanticSearchTool(AppConfig appConfig, MCPService mcpService) {
+    public SemanticSearchTool(AppConfig appConfig, MCPService mcpService,
+                               GitNexusStalenessChecker stalenessChecker) {
         super("semantic_search",
               "Search the codebase using natural language (BM25 keyword + vector embedding + Reciprocal Rank Fusion + 1-hop graph expansion). " +
               "Returns execution flows and symbols grouped by relevance. " +
@@ -37,6 +40,7 @@ public class SemanticSearchTool extends BaseTool {
               "This tool understands meaning, not just text. Do NOT use it for literal symbol lookups.");
         this.appConfig = appConfig;
         this.mcpService = mcpService;
+        this.stalenessChecker = stalenessChecker;
     }
 
     @Override
@@ -63,6 +67,13 @@ public class SemanticSearchTool extends BaseTool {
                 arguments.put("repo", repo);
             }
             arguments.put("limit", topK);
+
+            if (stalenessChecker != null) {
+                GitNexusStalenessChecker.StalenessResult staleness = stalenessChecker.ensureFresh();
+                if (!staleness.canProceed()) {
+                    return error(staleness.getErrorMessage(), System.currentTimeMillis() - startTime);
+                }
+            }
 
             Object response = mcpService.callTool(resolveServerName(), "query", arguments);
 

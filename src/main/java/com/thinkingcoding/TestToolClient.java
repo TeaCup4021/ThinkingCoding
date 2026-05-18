@@ -11,7 +11,7 @@ public class TestToolClient {
     public static void main(String[] args) throws Exception {
         MCPService service = new MCPService(null);
         service.connectToServer("gitnexus", "npx", java.util.Arrays.asList("gitnexus", "mcp"));
-        CodeGraphTool tool = new CodeGraphTool(null, service);
+        CodeGraphTool tool = new CodeGraphTool(null, service, null);
         System.out.println(tool.execute("{\"target\":\"ThinkingCodingCLI\"}"));
         System.exit(0);
     }
