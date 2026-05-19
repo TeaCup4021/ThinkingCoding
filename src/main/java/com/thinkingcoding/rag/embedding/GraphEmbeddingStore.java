@@ -10,7 +10,9 @@ import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.List;
+import java.util.stream.Collectors;
 
 /**
  * pgvector 向量存储的 CRUD 操作。
@@ -168,6 +170,53 @@ public class GraphEmbeddingStore {
             ps.executeUpdate();
         } catch (SQLException e) {
             log.error("Delete failed for {}: {}", qualifiedName, e.getMessage());
+        }
+    }
+
+    /** 按文件路径批量查找符号名。 */
+    public List<String> findByFilePaths(Collection<String> filePaths) {
+        if (filePaths == null || filePaths.isEmpty()) return List.of();
+
+        String placeholders = filePaths.stream().map(f -> "?").collect(Collectors.joining(","));
+        String sql = "SELECT qualified_name FROM " + tableName()
+                + " WHERE file_path IN (" + placeholders + ")";
+        List<String> result = new ArrayList<>();
+        try (Connection conn = getConnection();
+             PreparedStatement ps = conn.prepareStatement(sql)) {
+            int i = 1;
+            for (String fp : filePaths) {
+                ps.setString(i++, fp);
+            }
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    result.add(rs.getString("qualified_name"));
+                }
+            }
+            log.debug("Found {} symbols in {} files", result.size(), filePaths.size());
+        } catch (SQLException e) {
+            log.error("Failed to find by file paths: {}", e.getMessage());
+        }
+        return result;
+    }
+
+    /** 按文件路径批量删除。 */
+    public int deleteByFilePaths(Collection<String> filePaths) {
+        if (filePaths == null || filePaths.isEmpty()) return 0;
+
+        String placeholders = filePaths.stream().map(f -> "?").collect(Collectors.joining(","));
+        String sql = "DELETE FROM " + tableName() + " WHERE file_path IN (" + placeholders + ")";
+        try (Connection conn = getConnection();
+             PreparedStatement ps = conn.prepareStatement(sql)) {
+            int i = 1;
+            for (String fp : filePaths) {
+                ps.setString(i++, fp);
+            }
+            int deleted = ps.executeUpdate();
+            log.info("Deleted {} embeddings for {} changed files", deleted, filePaths.size());
+            return deleted;
+        } catch (SQLException e) {
+            log.error("Failed to delete by file paths: {}", e.getMessage());
+            return 0;
         }
     }
 

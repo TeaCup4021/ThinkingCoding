@@ -2,7 +2,8 @@
   "permissions": {
     "allow": [
       "Bash(mvn compile *)",
-      "Bash(npx gitnexus *)"
+      "Bash(npx gitnexus *)",
+      "Bash(mvn test *)"
     ]
   }
 }

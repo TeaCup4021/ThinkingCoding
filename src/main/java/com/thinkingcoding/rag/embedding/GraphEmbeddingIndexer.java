@@ -11,9 +11,12 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.stream.Collectors;
 
 /**
  * 图谱嵌入索引编排器。
@@ -55,6 +58,111 @@ public class GraphEmbeddingIndexer {
         }
         log.info("Discovered {} symbols, starting indexing...", targets.size());
         return indexTargets(targets, gitCommitHash);
+    }
+
+    /**
+     * 增量索引：对比新旧 commit，只重嵌入变更的符号。
+     */
+    public IndexResult incrementalIndex(String oldCommit, String newCommit) {
+        log.info("Starting incremental embedding: {} → {}", oldCommit, newCommit);
+
+        Map<String, Set<String>> symbolsByFile = detectChangedSymbols(oldCommit);
+        if (symbolsByFile.isEmpty()) {
+            log.info("No symbols changed, embedding is up to date");
+            return new IndexResult(0, 0, 0, Collections.emptyList());
+        }
+
+        Set<String> changedFiles = symbolsByFile.keySet();
+        log.info("Detected {} changed files from detect_changes", changedFiles.size());
+
+        int deleted = store.deleteByFilePaths(changedFiles);
+        log.info("Deleted {} old embeddings for changed files", deleted);
+
+        List<String> targets = new ArrayList<>();
+        for (Map.Entry<String, Set<String>> entry : symbolsByFile.entrySet()) {
+            targets.addAll(entry.getValue());
+        }
+        log.info("Re-indexing {} symbols from {} changed files", targets.size(), changedFiles.size());
+
+        return indexTargets(targets, newCommit);
+    }
+
+    Map<String, Set<String>> detectChangedSymbols(String oldCommit) {
+        Map<String, Set<String>> result = new LinkedHashMap<>();
+        try {
+            Map<String, Object> args = new LinkedHashMap<>();
+            args.put("scope", "compare");
+            args.put("baseRef", oldCommit);
+            if (gitNexusRepo != null && !gitNexusRepo.isBlank()) {
+                args.put("repo", gitNexusRepo);
+            }
+
+            log.info("Calling GitNexus detect_changes: scope=compare, baseRef={}", oldCommit);
+            Object response = mcpService.callTool(gitNexusServer, "detect_changes", args);
+            String text = extractTextContent(response);
+
+            if (text == null || text.isBlank()) {
+                log.warn("detect_changes returned empty response");
+                return result;
+            }
+
+            boolean inSymbolsSection = false;
+            for (String line : text.split("\n")) {
+                String trimmed = line.trim();
+                if (trimmed.startsWith("Changed symbols:")) {
+                    inSymbolsSection = true;
+                    continue;
+                }
+                if (inSymbolsSection) {
+                    if (trimmed.startsWith("Affected execution flows:")
+                            || trimmed.startsWith("Affected processes:")) {
+                        break;
+                    }
+                    int arrowIdx = trimmed.indexOf("→");
+                    if (arrowIdx > 0) {
+                        String left = trimmed.substring(0, arrowIdx).trim();
+                        String filePath = trimmed.substring(arrowIdx + 1).trim();
+                        int lastSpace = left.lastIndexOf(' ');
+                        String name = lastSpace > 0 ? left.substring(lastSpace + 1) : left;
+
+                        if (!name.isBlank() && !filePath.isBlank()) {
+                            result.computeIfAbsent(filePath, k -> new LinkedHashSet<>()).add(name);
+                        }
+                    }
+                }
+            }
+            log.info("detect_changes parsed: {} symbols in {} files",
+                    result.values().stream().mapToInt(Set::size).sum(), result.size());
+        } catch (Exception e) {
+            log.warn("detect_changes call failed, falling back to empty delta: {}", e.getMessage());
+        }
+        return result;
+    }
+
+    @SuppressWarnings("unchecked")
+    String extractTextContent(Object response) {
+        if (response == null) return null;
+        if (response instanceof String s) return s;
+        if (response instanceof List<?> list && !list.isEmpty()) {
+            Object first = list.get(0);
+            if (first instanceof Map<?, ?> m) {
+                Object text = m.get("text");
+                if (text instanceof String s) return s;
+            }
+        }
+        if (response instanceof Map<?, ?> m) {
+            Object content = m.get("content");
+            if (content instanceof List<?> list && !list.isEmpty()) {
+                Object first = list.get(0);
+                if (first instanceof Map<?, ?> cm) {
+                    Object text = cm.get("text");
+                    if (text instanceof String s) return s;
+                }
+            }
+        }
+        log.warn("Unable to extract text from response type: {}",
+                response.getClass().getName());
+        return null;
     }
 
     /**

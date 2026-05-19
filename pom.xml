@@ -230,6 +230,16 @@
         </executions>
       </plugin>
 
+      <!-- Exec Plugin for running standalone test mains -->
+      <plugin>
+        <groupId>org.codehaus.mojo</groupId>
+        <artifactId>exec-maven-plugin</artifactId>
+        <version>3.1.0</version>
+        <configuration>
+          <mainClass>com.thinkingcoding.mcp.StalenessPipelineE2ETest</mainClass>
+        </configuration>
+      </plugin>
+
       <!-- Surefire Plugin for Testing -->
       <plugin>
         <groupId>org.apache.maven.plugins</groupId>

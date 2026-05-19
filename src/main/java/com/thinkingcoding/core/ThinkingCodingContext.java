@@ -3,6 +3,7 @@ package com.thinkingcoding.core;
 import com.thinkingcoding.config.AppConfig;
 import com.thinkingcoding.config.ConfigManager;
 import com.thinkingcoding.config.MCPConfig;
+import com.thinkingcoding.mcp.GitNexusStalenessChecker;
 import com.thinkingcoding.mcp.MCPService;
 import com.thinkingcoding.mcp.MCPToolManager;
 import com.thinkingcoding.service.AIService;
@@ -20,6 +21,7 @@ import com.thinkingcoding.tools.rag.SemanticSearchTool;
 import com.thinkingcoding.rag.embedding.EmbeddingService;
 import com.thinkingcoding.rag.embedding.GraphEmbeddingStore;
 import com.thinkingcoding.rag.embedding.GraphEmbeddingIndexer;
+import com.thinkingcoding.rag.retrieval.RagContextEnricher;
 import com.thinkingcoding.tools.search.GrepSearchTool;
 import com.thinkingcoding.tools.todo.AgentTodoTool;
 import com.thinkingcoding.ui.ThinkingCodingUI;
@@ -113,12 +115,14 @@ public class ThinkingCodingContext {
 
         toolRegistry.register(new AgentTodoTool());
 
+        GitNexusStalenessChecker stalenessChecker = createStalenessChecker(appConfig);
+
         if (appConfig.getTools().getCodeGraph().isEnabled()) {
-            toolRegistry.register(new CodeGraphTool(appConfig, mcpService));
+            toolRegistry.register(new CodeGraphTool(appConfig, mcpService, stalenessChecker));
         }
 
         if (appConfig.getTools().getSemanticSearch().isEnabled()) {
-            toolRegistry.register(new SemanticSearchTool(appConfig, mcpService));
+            toolRegistry.register(new SemanticSearchTool(appConfig, mcpService, stalenessChecker));
         }
 
         // 🔥 初始化图谱嵌入组件 (Embedding + pgvector)
@@ -172,10 +176,41 @@ public class ThinkingCodingContext {
                                     + result.skipped() + " 跳过, " + result.failed() + " 失败");
                         }, "graph-embedding-indexer").start();
                     }
+
+                    // 设置 GitNexus 刷新回调：analyze 成功后自动增量更新嵌入
+                    final GraphEmbeddingStore store = graphEmbeddingStore;
+                    stalenessChecker.setOnIndexRefreshed(() -> {
+                        String oldCommit = store.getStoredCommitHash();
+                        String newCommit = getGitHeadCommit();
+                        if (oldCommit != null && newCommit != null && !oldCommit.equals(newCommit)) {
+                            System.out.println("🔄 GitNexus 索引已刷新，增量更新图谱嵌入...");
+                            GraphEmbeddingIndexer.IndexResult result = indexer.incrementalIndex(oldCommit, newCommit);
+                            System.out.println("✅ 增量嵌入完成: " + result.indexed() + " 个符号, "
+                                    + result.skipped() + " 跳过, " + result.failed() + " 失败");
+                        }
+                    });
                 }
             } catch (Exception e) {
                 System.err.println("⚠️  图谱嵌入组件初始化失败: " + e.getMessage());
             }
+        }
+
+        // 🔥 创建 RAG 上下文增强器（自动注入相关代码到 LLM 提示）
+        RagContextEnricher ragEnricher = null;
+        if (embeddingService != null && graphEmbeddingStore != null && mcpService != null
+                && appConfig.getRag() != null) {
+            ragEnricher = new RagContextEnricher(
+                    embeddingService,
+                    graphEmbeddingStore,
+                    mcpService,
+                    appConfig.getRag().getGitnexus().getServerName(),
+                    java.nio.file.Path.of(appConfig.getRag().getWorkspace() != null
+                            ? appConfig.getRag().getWorkspace()
+                            : System.getProperty("user.dir")),
+                    appConfig.getRag()
+            );
+            System.out.println("✅ RAG 上下文增强器初始化成功 (topK="
+                    + appConfig.getRag().getRagTopK() + ")");
         }
 
         // 🔥 初始化 MCP 服务（如果启用）
@@ -194,7 +229,7 @@ public class ThinkingCodingContext {
             contextManager.setAvailableSkills(enabledSkills);
         }
         
-        AIService aiService = new LangChainService(appConfig, toolRegistry, contextManager);  // 🔥 注入 contextManager
+        AIService aiService = new LangChainService(appConfig, toolRegistry, contextManager, ragEnricher);
         SessionService sessionService = new SessionService();
         PerformanceMonitor performanceMonitor = new PerformanceMonitor();
 
@@ -281,6 +316,24 @@ public class ThinkingCodingContext {
         } catch (Exception ignored) {
             return null;
         }
+    }
+
+    private static GitNexusStalenessChecker createStalenessChecker(AppConfig appConfig) {
+        String workspace = null;
+        if (appConfig != null && appConfig.getRag() != null) {
+            workspace = appConfig.getRag().getWorkspace();
+        }
+        if (workspace == null || workspace.isBlank()) {
+            workspace = System.getProperty("user.dir");
+        }
+
+        AppConfig.StalenessCheckConfig config = null;
+        if (appConfig != null && appConfig.getRag() != null
+                && appConfig.getRag().getGitnexus() != null) {
+            config = appConfig.getRag().getGitnexus().getStalenessCheck();
+        }
+
+        return new GitNexusStalenessChecker(config, workspace);
     }
 
     private static void initializeSkills(AppConfig appConfig, AIService aiService, ToolRegistry toolRegistry) {
