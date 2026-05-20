@@ -4,11 +4,14 @@ import com.thinkingcoding.config.AppConfig;
 import com.thinkingcoding.tools.BaseTool;
 import com.thinkingcoding.model.ToolResult;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
+
 import java.io.IOException;
 import java.nio.file.*;
 import java.nio.file.attribute.BasicFileAttributes;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.regex.Pattern;
 import java.util.regex.PatternSyntaxException;
 
@@ -33,21 +36,66 @@ public class GrepSearchTool extends BaseTool {
         long startTime = System.currentTimeMillis();
 
         try {
-            String[] parts = input.split(" ", 2);
-            if (parts.length < 2) {
-                return error("Invalid format. Use: <pattern> <path>", System.currentTimeMillis() - startTime);
+            String pattern;
+            String searchPath;
+            String includeGlob = null;
+            boolean isRegexp = true;
+
+            // Try JSON format first (from LangChain4j tool calling)
+            if (input != null && input.trim().startsWith("{")) {
+                try {
+                    ObjectMapper mapper = new ObjectMapper();
+                    @SuppressWarnings("unchecked")
+                    Map<String, Object> params = mapper.readValue(input, Map.class);
+                    Object queryObj = params.get("query");
+                    if (queryObj == null) {
+                        return error("Missing required parameter: query",
+                                System.currentTimeMillis() - startTime);
+                    }
+                    pattern = queryObj.toString();
+                    // "path" = search root directory (optional, default ".")
+                    Object pathObj = params.get("path");
+                    searchPath = pathObj != null ? pathObj.toString() : ".";
+                    // "includePattern" = file name glob filter (optional, e.g. "*.java")
+                    Object includeObj = params.get("includePattern");
+                    if (includeObj != null) {
+                        includeGlob = includeObj.toString();
+                    }
+                    // "isRegexp" = whether query is a regex (optional, default true)
+                    Object regexpObj = params.get("isRegexp");
+                    if (regexpObj instanceof Boolean) {
+                        isRegexp = (Boolean) regexpObj;
+                    }
+                } catch (Exception e) {
+                    return error("Failed to parse JSON parameters: " + e.getMessage(),
+                            System.currentTimeMillis() - startTime);
+                }
+            } else {
+                // Legacy positional format: <pattern> <path>
+                String[] parts = input.split(" ", 2);
+                if (parts.length < 2) {
+                    return error("Invalid format. Use: <pattern> <path>",
+                            System.currentTimeMillis() - startTime);
+                }
+                pattern = parts[0];
+                searchPath = parts[1];
             }
 
-            String pattern = parts[0];
-            String searchPath = parts[1];
-
-            Path path = Paths.get(searchPath).toAbsolutePath();
+            Path path;
+            try {
+                path = Paths.get(searchPath).toAbsolutePath();
+            } catch (InvalidPathException e) {
+                // searchPath 包含非法字符 (如 *)，降级为从当前目录搜索
+                path = Paths.get(".").toAbsolutePath();
+            }
 
             if (!Files.exists(path)) {
                 return error("Path not found: " + path, System.currentTimeMillis() - startTime);
             }
 
             List<String> results = new ArrayList<>();
+            final String glob = includeGlob;
+            final boolean regex = isRegexp;
 
             if (Files.isDirectory(path)) {
                 // 递归搜索目录
@@ -55,7 +103,10 @@ public class GrepSearchTool extends BaseTool {
                     @Override
                     public FileVisitResult visitFile(Path file, BasicFileAttributes attrs) throws IOException {
                         if (Files.isRegularFile(file) && !Files.isHidden(file)) {
-                            searchInFile(file, pattern, results);
+                            if (glob == null || glob.isEmpty()
+                                    || matchGlob(file, glob)) {
+                                searchInFile(file, pattern, results, regex);
+                            }
                         }
                         return FileVisitResult.CONTINUE;
                     }
@@ -67,7 +118,7 @@ public class GrepSearchTool extends BaseTool {
                 });
             } else {
                 // 搜索单个文件
-                searchInFile(path, pattern, results);
+                searchInFile(path, pattern, results, regex);
             }
 
             if (results.isEmpty()) {
@@ -82,13 +133,17 @@ public class GrepSearchTool extends BaseTool {
         }
     }
 
-    private void searchInFile(Path file, String pattern, List<String> results) {
+    private void searchInFile(Path file, String pattern, List<String> results, boolean isRegexp) {
         try {
             Pattern regex;
-            try {
-                regex = Pattern.compile(pattern, Pattern.CASE_INSENSITIVE);
-            } catch (PatternSyntaxException e) {
-                // 如果正则表达式无效，使用普通文本搜索
+            if (isRegexp) {
+                try {
+                    regex = Pattern.compile(pattern, Pattern.CASE_INSENSITIVE);
+                } catch (PatternSyntaxException e) {
+                    // 如果正则表达式无效，使用普通文本搜索
+                    regex = Pattern.compile(Pattern.quote(pattern), Pattern.CASE_INSENSITIVE);
+                }
+            } else {
                 regex = Pattern.compile(Pattern.quote(pattern), Pattern.CASE_INSENSITIVE);
             }
 
@@ -100,6 +155,16 @@ public class GrepSearchTool extends BaseTool {
             }
         } catch (IOException e) {
             results.add(String.format("%s: ERROR - %s", file, e.getMessage()));
+        }
+    }
+
+    private boolean matchGlob(Path file, String glob) {
+        try {
+            PathMatcher matcher = FileSystems.getDefault().getPathMatcher("glob:" + glob);
+            return matcher.matches(file.getFileName());
+        } catch (Exception e) {
+            // Invalid glob pattern — include the file
+            return true;
         }
     }
 

@@ -428,8 +428,9 @@ public class LangChainService implements AIService {
         if ("grep_search".equals(toolName)) {
             return JsonObjectSchema.builder()
                     .addStringProperty("query", "检索关键词或正则表达式")
-                    .addStringProperty("includePattern", "文件匹配规则，如 *.java")
-                    .addBooleanProperty("isRegexp", "是否启用正则")
+                    .addStringProperty("path", "搜索根目录，默认为当前目录")
+                    .addStringProperty("includePattern", "文件匹配glob规则，如 *.java")
+                    .addBooleanProperty("isRegexp", "是否启用正则，默认true")
                     .required("query")
                     .additionalProperties(false)
                     .build();
