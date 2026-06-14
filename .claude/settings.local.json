@@ -3,7 +3,8 @@
     "allow": [
       "Bash(mvn compile *)",
       "Bash(npx gitnexus *)",
-      "Bash(mvn test *)"
+      "Bash(mvn test *)",
+      "Bash(git log *)"
     ]
   }
 }
