@@ -160,6 +160,41 @@ public class GraphEmbeddingIndexerTest {
         assertTrue(result.indexed() > 0);
     }
 
+    @Test
+    public void testParseMarkdownCypherRows() throws Exception {
+        String markdown = "| id | type | name | filePath | startLine | endLine | content | description | label | processType | stepCount | returnType | parameterCount |\n"
+                + "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |\n"
+                + "| Class:src/main/java/com/example/Foo.java:Foo | Class | Foo | src/main/java/com/example/Foo.java | 1 | 20 | public class Foo {} | demo class |  |  |  |  |  |\n";
+
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("markdown", markdown);
+
+        var method = GraphEmbeddingIndexer.class.getDeclaredMethod("parseCypherRows", Map.class);
+        method.setAccessible(true);
+        @SuppressWarnings("unchecked")
+        List<Map<String, String>> rows = (List<Map<String, String>>) method.invoke(indexer, payload);
+
+        assertEquals(1, rows.size());
+        assertEquals("Foo", rows.get(0).get("name"));
+        assertEquals("Class", rows.get(0).get("type"));
+        assertEquals("src/main/java/com/example/Foo.java", rows.get(0).get("filePath"));
+    }
+
+    @Test
+    public void testDiscoverGraphNodesFallsBackWhenCypherIsEmpty() throws Exception {
+        when(mockMcp.callTool(eq("gitnexus"), eq("cypher"), anyMap()))
+                .thenReturn(Map.of("markdown", "| id | name |\n| --- | --- |\n"));
+        when(mockMcp.callTool(eq("gitnexus"), eq("query"), anyMap()))
+                .thenReturn(List.of(Map.of("text", "{\"definitions\":[{\"name\":\"Foo\",\"qualifiedName\":\"Foo\"}]}")));
+
+        var method = GraphEmbeddingIndexer.class.getDeclaredMethod("discoverGraphNodes");
+        method.setAccessible(true);
+        @SuppressWarnings("unchecked")
+        List<?> nodes = (List<?>) method.invoke(indexer);
+
+        assertFalse(nodes.isEmpty());
+    }
+
     private Map<String, Object> buildMockContextResponse(String name, String filePath, String kind) {
         Map<String, Object> symbol = new LinkedHashMap<>();
         symbol.put("uid", kind + ":src/main/java/com/thinkingcoding/" + name + ".java:" + name);

@@ -4,6 +4,7 @@ import com.thinkingcoding.rag.codegraph.CodeGraphSymbol;
 import com.thinkingcoding.rag.codegraph.ReferenceKind;
 
 import java.util.EnumSet;
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -43,4 +44,36 @@ public final class GraphEnrichedDocument {
 
         return sb.toString();
     }
+
+    public static String build(DocumentFields document) {
+        StringBuilder sb = new StringBuilder();
+
+        append(sb, "TYPE", document.type());
+        append(sb, "NAME", document.name());
+        append(sb, "FILE", document.filePath());
+
+        for (Map.Entry<String, List<String>> entry : document.fields().entrySet()) {
+            String key = entry.getKey();
+            if ("TYPE".equals(key) || "NAME".equals(key) || "FILE".equals(key)) {
+                continue;
+            }
+            for (String value : entry.getValue()) {
+                append(sb, key, value);
+            }
+        }
+
+        return sb.toString();
+    }
+
+    private static void append(StringBuilder sb, String key, String value) {
+        if (value == null || value.isBlank()) {
+            return;
+        }
+        sb.append("[").append(key).append("] ").append(value).append("\n");
+    }
+
+    public record DocumentFields(String type,
+                                 String name,
+                                 String filePath,
+                                 Map<String, List<String>> fields) {}
 }

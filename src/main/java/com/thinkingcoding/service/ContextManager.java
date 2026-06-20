@@ -4,6 +4,9 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
 import com.thinkingcoding.config.AppConfig;
 import com.thinkingcoding.model.ChatMessage;
+import com.thinkingcoding.service.memory.DeepSeekTokenCounter;
+import com.thinkingcoding.service.memory.WorkingMemory;
+import com.thinkingcoding.service.memory.WorkingMemoryConfig;
 import dev.langchain4j.data.message.UserMessage;
 import dev.langchain4j.model.chat.response.ChatResponse;
 import dev.langchain4j.model.openai.OpenAiChatModel;
@@ -15,14 +18,16 @@ import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.function.Function;
 
 /**
- * 上下文管理器
- * 负责管理对话历史的长度，防止 Token 超限
+ * 上下文管理器（facade）。
  *
- * 支持两种策略：
- * 1. 滑动窗口：保留最近 N 轮对话
- * 2. Token 控制：根据 Token 数量动态截断
+ * <p>职责收敛为：组装固定段（项目上下文 / 当前上下文）、统一 token 计数、
+ * 把"可变历史"的窗口构建委托给 {@link WorkingMemory}。
+ *
+ * <p>历史的三策略（滑动窗口 / Token / 混合）与全量摘要分支已移除，
+ * 统一为单一策略：token 预算 + 轮次完整性 + 滚动摘要（见 WorkingMemory）。
  */
 public class ContextManager {
     private static final Logger log = LoggerFactory.getLogger(ContextManager.class);
@@ -35,23 +40,13 @@ public class ContextManager {
     private volatile String lastToolResults;
 
     // 默认配置
-    private static final int DEFAULT_MAX_HISTORY_TURNS = 10;  // 保留10轮（20条消息）
     private static final int DEFAULT_MAX_CONTEXT_TOKENS = 3000;  // 为历史预留3000 tokens
     private static final int DEFAULT_MAX_OUTPUT_TOKENS = 4096;  // 模型单次最大输出 tokens
 
-    // 策略枚举
-    public enum Strategy {
-        SLIDING_WINDOW,  // 滑动窗口
-        TOKEN_BASED,     // 基于 Token
-        HYBRID           // 混合策略
-    }
-
-    private Strategy strategy = Strategy.TOKEN_BASED;  // 默认使用 Token 控制
-    private int maxHistoryTurns = DEFAULT_MAX_HISTORY_TURNS;
     private int maxContextTokens = DEFAULT_MAX_CONTEXT_TOKENS;
     private int maxOutputTokens = DEFAULT_MAX_OUTPUT_TOKENS;
 
-    private volatile int lastHistoryTokens = -1;
+    // token usage 仅用于日志/核对，不参与发送前的窗口决策
     private volatile int lastPromptTokens = -1;
     private volatile int lastCompletionTokens = -1;
     private volatile int lastTotalTokens = -1;
@@ -60,6 +55,11 @@ public class ContextManager {
     private final ObjectMapper objectMapper;
 
     private OpenAiChatModel ChatModel;
+    private Function<String, String> conversationSummarizer;
+
+    private final DeepSeekTokenCounter tokenCounter;
+    private final WorkingMemoryConfig workingMemoryConfig;
+    private WorkingMemory workingMemory;
 
     public ContextManager(AppConfig appConfig) {
         this.appConfig = appConfig;
@@ -67,6 +67,11 @@ public class ContextManager {
                 .enable(SerializationFeature.INDENT_OUTPUT)
                 .disable(SerializationFeature.FAIL_ON_EMPTY_BEANS);
         initializeChatModel();
+        this.conversationSummarizer = this::callLlmForSummary;
+        this.tokenCounter = DeepSeekTokenCounter.getInstance();
+        this.workingMemoryConfig = new WorkingMemoryConfig();
+        this.workingMemory = new WorkingMemory(workingMemoryConfig, tokenCounter,
+                this::summarizeConversation);
         loadConfiguration();
     }
 
@@ -125,34 +130,40 @@ public class ContextManager {
      * @param fullHistory
      * @return
      */
+    /**
+     * 获取 AI 上下文：在工作记忆预算内构建发送给模型的历史。
+     *
+     * <p>委托 {@link WorkingMemory#buildWindow}。此重载用默认预算
+     * （maxContextTokens - maxOutputTokens），不扣固定段；需要扣固定段时
+     * 调用 {@link #getContextForAI(List, int)}。
+     */
     public List<ChatMessage> getContextForAI(List<ChatMessage> fullHistory) {
+        return getContextForAI(fullHistory, getCompressionThreshold());
+    }
+
+    /**
+     * 获取 AI 上下文，预算由调用方给定。
+     *
+     * @param fullHistory  完整对话历史（不含固定段）
+     * @param budgetTokens 工作记忆可用预算 = maxContextTokens - maxOutputTokens - 固定段tokens
+     */
+    public List<ChatMessage> getContextForAI(List<ChatMessage> fullHistory, int budgetTokens) {
         if (fullHistory == null || fullHistory.isEmpty()) {
             return new ArrayList<>();
         }
-
-        List<ChatMessage> result;
-
-        //自动压缩，只保留轮询中最后一个 user 消息之前的工具调用结果，且只保留前后各200字符，中间省略，标明工具名称，以节省 token
-        List<ChatMessage> afterMicro = micro_compact(fullHistory);
-
-        switch (strategy) {
-            case SLIDING_WINDOW:
-                result = applySlidingWindow(afterMicro);
-                break;
-            case TOKEN_BASED:
-                result = applyTokenLimit(fullHistory,afterMicro);
-                break;
-            case HYBRID:
-                result = applyHybridStrategy(fullHistory,afterMicro);
-                break;
-            default:
-                result = afterMicro;
-        }
-
-        // 输出统计信息
+        List<ChatMessage> result = workingMemory.buildWindow(fullHistory, budgetTokens);
         logContextStatistics(fullHistory, result);
-
         return result;
+    }
+
+    /** 统一 token 计数入口（精确分词，回退字符启发式）。 */
+    public int estimateTokens(String text) {
+        return tokenCounter.count(text);
+    }
+
+    /** 暴露工作记忆参数，供编排层/配置调整。 */
+    public WorkingMemoryConfig getWorkingMemoryConfig() {
+        return workingMemoryConfig;
     }
 
     /**
@@ -347,244 +358,21 @@ public class ContextManager {
         }
     }
 
-    private List<ChatMessage> micro_compact(List<ChatMessage> messages) {
-        // sessions中保存结果不变，不可修改messages，使用深拷贝：创建全新消息对象
-        List<ChatMessage> result = new ArrayList<>();
-        int lastUserIndex = -1;
-
-        for (int i = 0; i < messages.size(); i++) {
-            ChatMessage msg = messages.get(i);
-            result.add(new ChatMessage(msg)); // 使用复制构造器
-            // 记录最近一轮对话的起点索引（最后一个 user 消息）
-            if ("user".equals(msg.getRole())) {
-                lastUserIndex = i;
-            }
-        }
-
-        int SAFE_TOOL_LENGTH = 500;
-        int HEAD_TAIL_SIZE = 200;
-
-        for (int i = 0; i < result.size(); i++) {
-            ChatMessage msg = result.get(i);
-            // 仅对最近一轮对话（最后一个 user 消消息）之前的工具调用结果进行特征提取压缩
-            if (i < lastUserIndex && msg != null && "system".equals(msg.getRole()) && isToolResultMessage(msg.getContent())) {
-                String content = msg.getContent();
-                if (content != null && content.length() > SAFE_TOOL_LENGTH) {
-                    String toolName = extractToolNameFromContent(content);
-                    String compactedContent;
-
-                    if ("file_manager".equals(toolName) || "command_executor".equals(toolName) || "grep_search".equals(toolName)) {
-                        String head = content.substring(0, HEAD_TAIL_SIZE);
-                        String tail = content.substring(content.length() - HEAD_TAIL_SIZE);
-                        int omittedLength = content.length() - (HEAD_TAIL_SIZE * 2);
-                        compactedContent = String.format("%s\n\n[... omitted %d chars, tool: %s ...]\n\n%s",
-                                head, omittedLength, toolName, tail);
-                    } else {
-                        compactedContent = String.format("%s\n\n[... content truncated for token saving. Tool: %s ...]",
-                                content.substring(0, SAFE_TOOL_LENGTH), toolName);
-                    }
-                    msg.setContent(compactedContent);
-                }
-            }
-        }
-
-        return result;
-    }
-
-    private boolean isToolResultMessage(String content) {
-        if (content == null) return false;
-        // 工具成功或失败消息的特征前缀
-        return content.startsWith("Tool '") || content.startsWith("Tool execution failed: ");
-    }
-
-    // 从消息内容中提取工具名称
-    // 格式示例: "Tool 'file_manager' executed successfully ..." 或 "Tool execution failed: 'unknown_tool' not found."
-    private String extractToolNameFromContent(String content) {
-        try {
-            // 查找单引号之间的内容
-            int start = content.indexOf('\'');
-            int end = content.indexOf('\'', start + 1);
-            if (start != -1 && end != -1) {
-                return content.substring(start + 1, end);
-            }
-            // 降级处理：尝试匹配 "Tool execution failed: " 后的内容
-            if (content.startsWith("Tool execution failed: ")) {
-                String after = content.substring("Tool execution failed: ".length());
-                int space = after.indexOf(' ');
-                if (space > 0) {
-                    return after.substring(0, space);
-                }
-                return "unknown";
-            }
-            return "unknown";
-        } catch (Exception e) {
-            return "unknown";
-        }
-    }
-
-    /**
-     * 策略1：滑动窗口
-     * 保留最近 N 轮对话
-     */
-    private List<ChatMessage> applySlidingWindow(List<ChatMessage> fullHistory) {
-        if (fullHistory == null || fullHistory.isEmpty()) {
-            return new ArrayList<>();
-        }
-
-        // maxHistoryTurns 现在真实代表“保留多少个 User 的问题回合”
-        int remainTurns = maxHistoryTurns;
-
-        int boundaryIndex = 0; // 默认保留全部
-        int userMessageCount = 0;
-
-        // 从后往前扫，数遇到了几个 "user" 消息
-        for (int i = fullHistory.size() - 1; i >= 0; i--) {
-            ChatMessage msg = fullHistory.get(i);
-            if ("user".equals(msg.getRole())) {
-                userMessageCount++;
-                // 当找到了正好是保留上限的那个 user 消息，记录索引并跳出
-                if (userMessageCount == remainTurns) {
-                    boundaryIndex = i;
-                    break;
-                }
-            }
-        }
-
-        return new ArrayList<>(fullHistory.subList(boundaryIndex, fullHistory.size()));
-    }
-
-    /**
-     * 策略2：Token 控制
-     * 根据 Token 数量动态截断
-     */
-    private List<ChatMessage> applyTokenLimit(List<ChatMessage> fullHistory,List<ChatMessage> afterMicro) {
-        if (!shouldCompressHistory()) {
-            return afterMicro;
-        }
-
-        try{
-            // 1. 生成对话文本
-            // 精准切分：保留最后 2 条记录（通常是最后一轮 User 问 + AI 答）
-            int keepCount = Math.min(2, fullHistory.size());
-            int splitIndex = fullHistory.size() - keepCount;
-
-            List<ChatMessage> toSummarize = fullHistory.subList(0, splitIndex);
-            List<ChatMessage> tailMessages = new ArrayList<>(fullHistory.subList(splitIndex, fullHistory.size()));
-
-            String conversationText = truncateConversation(toSummarize);
-
-            // 2. 构建摘要 prompt
-            String prompt = "Summarize this conversation for continuity. Include: " +
-                    "1) What was accomplished, 2) Current state, 3) Key decisions made. " +
-                    "Be concise but preserve critical details.\n\n" + conversationText;
-
-            // 3. 调用 LLM 生成摘要
-            String summary = callLlmForSummary(prompt);
-
-            // 4. 构建压缩后的消息列表
-            String sessionId = afterMicro.get(0).getSessionId();
-            fullHistory.clear();
-
-            // 构建新的消息历史
-            fullHistory.add(new ChatMessage("user",
-                    "[Conversation compressed.]" + "\n\n" + summary,sessionId));
-
-            // 重新接上尾部对话，保证上下文连贯
-            fullHistory.addAll(tailMessages);
-
-            resetTokenUsage();
-            return fullHistory;
-        } catch (Exception e){
-            return afterMicro;
-        }
-    }
-
-    /**
-     * 策略3：混合策略
-     * 先应用滑动窗口，再应用 Token 控制
-     */
-    private List<ChatMessage> applyHybridStrategy(List<ChatMessage> fullHistory,List<ChatMessage> afterMicro) {
-        // 1. 先应用滑动窗口
-        List<ChatMessage> windowedHistory = applySlidingWindow(fullHistory);
-
-        // 2. 再应用 Token 控制
-        return applyTokenLimit(windowedHistory,afterMicro);
-    }
-
-    /**
-     * 估算文本的 Token 数量
-     * 简单方法：中文 2 字符 ≈ 1 token，英文 4 字符 ≈ 1 token
-     *
-     * @param text 待估算的文本
-     * @return 估算的 token 数量
-     */
-    private int estimateTokens(String text) {
-        if (text == null || text.isEmpty()) {
-            return 0;
-        }
-
-        int chineseChars = 0;
-        int otherChars = 0;
-
-        for (char c : text.toCharArray()) {
-            if (isChinese(c)) {
-                chineseChars++;
-            } else {
-                otherChars++;
-            }
-        }
-
-        // 中文：2 字符 ≈ 1 token
-        // 英文：4 字符 ≈ 1 token
-        return (chineseChars / 2) + (otherChars / 4);
-    }
-
-    /**
-     * 判断字符是否为中文
-     */
-    private boolean isChinese(char c) {
-        return c >= 0x4E00 && c <= 0x9FA5;
-    }
-
-    /**
-     * 截断文本到指定 Token 限制
-     */
-    private String truncateToTokenLimit(String text, int maxTokens) {
-        if (estimateTokens(text) <= maxTokens) {
-            return text;
-        }
-
-        // 简单截断：取前 N 个字符
-        int targetChars = maxTokens * 3;  // 保守估计
-        if (text.length() <= targetChars) {
-            return text;
-        }
-
-        return text.substring(0, targetChars) + "\n\n[内容过长已截断...]";
-    }
-
     /**
      * 输出上下文统计信息
      */
     private void logContextStatistics(List<ChatMessage> fullHistory, List<ChatMessage> managedHistory) {
-        if (lastHistoryTokens < 0) {
-            return;
-        }
-
-        int threshold = getCompressionThreshold();
         boolean compressed = managedHistory.size() < fullHistory.size();
-        
-        // 使用 INFO 级别日志，便于观察
+        int budget = getCompressionThreshold();
+
         log.info("📊 上下文管理统计:");
-        log.info("  策略: {}", strategy);
-        log.info("  历史消息 tokens: {}", lastHistoryTokens);
-        log.info("  压缩阈值: {} (maxContext {} - maxOutput {})", threshold, maxContextTokens, maxOutputTokens);
-        log.info("  是否需要压缩: {}", shouldCompressHistory());
+        log.info("  预算(threshold): {} (maxContext {} - maxOutput {})", budget, maxContextTokens, maxOutputTokens);
+        log.info("  上次API用量: prompt={}, total={}", lastPromptTokens, lastTotalTokens);
         log.info("  历史消息数量: {} 条 → 发送历史数量: {} 条", fullHistory.size(), managedHistory.size());
-        
+
         if (compressed) {
-            double compressionRate = (1 - (double)managedHistory.size() / fullHistory.size()) * 100;
-            log.info("  ✅ 已压缩！压缩率: {:.2f}%", compressionRate);
+            double compressionRate = (1 - (double) managedHistory.size() / fullHistory.size()) * 100;
+            log.info("  ✅ 已压缩！压缩率: {}%", String.format("%.2f", compressionRate));
         } else {
             log.info("  ⏸️  未压缩");
         }
@@ -609,70 +397,44 @@ public class ContextManager {
         return response.aiMessage().text();
     }
 
+    private String summarizeConversation(String prompt) {
+        if (conversationSummarizer == null) {
+            return callLlmForSummary(prompt);
+        }
+        return conversationSummarizer.apply(prompt);
+    }
+
+    public void setConversationSummarizer(Function<String, String> conversationSummarizer) {
+        this.conversationSummarizer = conversationSummarizer;
+    }
+
+    /**
+     * 记录上一次 API 的真实 token 用量。仅用于日志/核对，不参与发送前的窗口决策
+     * （窗口决策由 WorkingMemory 用精确分词器在发送前完成）。
+     */
     public synchronized void recordTokenUsage(int promptTokens, int completionTokens, int totalTokens) {
         if (promptTokens <= 0 && totalTokens <= 0) {
             return;
         }
-
         lastPromptTokens = promptTokens;
         lastCompletionTokens = completionTokens;
-        if (totalTokens > 0) {
-            lastTotalTokens = totalTokens;
-        } else {
-            // 如果 totalTokens 没有提供，则根据 promptTokens 和 completionTokens 估算
-            lastTotalTokens = Math.max(0, promptTokens) + Math.max(0, completionTokens);
-        }
-        lastHistoryTokens = lastTotalTokens;
-        
-        // 记录token使用情况
-        log.info("🔢 Token使用记录: prompt={}, completion={}, total={}", 
-            promptTokens, completionTokens, lastTotalTokens);
-        log.info("  压缩阈值: {}, 是否触发压缩: {}", 
-            getCompressionThreshold(), shouldCompressHistory());
+        lastTotalTokens = totalTokens > 0
+                ? totalTokens
+                : Math.max(0, promptTokens) + Math.max(0, completionTokens);
+
+        log.info("🔢 Token使用记录: prompt={}, completion={}, total={}",
+                promptTokens, completionTokens, lastTotalTokens);
     }
 
     public synchronized void resetTokenUsage() {
-        lastHistoryTokens = -1;
         lastPromptTokens = -1;
         lastCompletionTokens = -1;
         lastTotalTokens = -1;
     }
 
-    // 获取当前历史消息的 Token 数量
+    /** 工作记忆预算（不扣固定段）= maxContextTokens - maxOutputTokens。 */
     int getCompressionThreshold() {
         return maxContextTokens - maxOutputTokens;
-    }
-
-    // 判断是否需要压缩历史消息
-    boolean shouldCompressHistory() {
-        int threshold = getCompressionThreshold();
-        if (lastHistoryTokens < 0 || threshold <= 0) {
-            return false;
-        }
-        return lastHistoryTokens >= threshold;
-    }
-
-    /**
-     * 获取当前策略
-     */
-    public Strategy getStrategy() {
-        return strategy;
-    }
-
-    /**
-     * 设置策略
-     */
-    public void setStrategy(Strategy strategy) {
-        this.strategy = strategy;
-        log.info("切换上下文策略为: {}", strategy);
-    }
-
-    /**
-     * 设置最大历史轮数（用于滑动窗口策略）
-     */
-    public void setMaxHistoryTurns(int maxHistoryTurns) {
-        this.maxHistoryTurns = maxHistoryTurns;
-        log.info("设置最大历史轮数: {} 轮", maxHistoryTurns);
     }
 
     /**
@@ -692,8 +454,8 @@ public class ContextManager {
      * 获取配置摘要
      */
     public String getConfigSummary() {
-        return String.format("Strategy: %s, MaxTurns: %d, MaxTokens: %d",
-                strategy, maxHistoryTurns, maxContextTokens);
+        return String.format("WorkingMemory(budget=%d, maxContext=%d, maxOutput=%d)",
+                getCompressionThreshold(), maxContextTokens, maxOutputTokens);
     }
 
     /**

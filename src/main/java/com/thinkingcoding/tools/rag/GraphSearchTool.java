@@ -50,7 +50,7 @@ public class GraphSearchTool extends BaseTool {
             int topK = intParam(params, "topK", DEFAULT_TOP_K);
 
             float[] queryVector = embeddingService.embed(query);
-            List<SearchResult> results = store.search(queryVector, topK);
+            List<SearchResult> results = store.searchDefault(queryVector, topK);
 
             String output = formatResults(query, results);
             return success(output, System.currentTimeMillis() - startTime);

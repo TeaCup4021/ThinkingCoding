@@ -6,6 +6,7 @@ import com.thinkingcoding.mcp.MCPService;
 import com.thinkingcoding.rag.embedding.EmbeddingService;
 import com.thinkingcoding.rag.embedding.GraphEmbeddingStore;
 import com.thinkingcoding.rag.embedding.GraphEmbeddingStore.SearchResult;
+import com.thinkingcoding.tools.rag.HybridLocatorTool;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -34,6 +35,7 @@ public class RagContextEnricher {
     private final String gitNexusServer;
     private final Path workspaceRoot;
     private final AppConfig.RagConfig config;
+    private final HybridLocatorTool hybridLocatorTool;
 
     public RagContextEnricher(EmbeddingService embeddingService,
                               GraphEmbeddingStore store,
@@ -41,12 +43,23 @@ public class RagContextEnricher {
                               String gitNexusServer,
                               Path workspaceRoot,
                               AppConfig.RagConfig config) {
+        this(embeddingService, store, mcpService, gitNexusServer, workspaceRoot, config, null);
+    }
+
+    public RagContextEnricher(EmbeddingService embeddingService,
+                              GraphEmbeddingStore store,
+                              MCPService mcpService,
+                              String gitNexusServer,
+                              Path workspaceRoot,
+                              AppConfig.RagConfig config,
+                              HybridLocatorTool hybridLocatorTool) {
         this.embeddingService = embeddingService;
         this.store = store;
         this.mcpService = mcpService;
         this.gitNexusServer = gitNexusServer;
         this.workspaceRoot = workspaceRoot;
         this.config = config;
+        this.hybridLocatorTool = hybridLocatorTool;
     }
 
     public boolean isEnabled() {
@@ -58,11 +71,15 @@ public class RagContextEnricher {
 
         try {
             long t0 = System.currentTimeMillis();
+            String hybridContext = enrichWithHybridLocator(userInput, t0);
+            if (!hybridContext.isBlank()) {
+                return hybridContext;
+            }
             float[] queryVector = embeddingService.embed(userInput);
             log.info("RAG: embedded question → {}d vector ({}ms)",
                     queryVector.length, System.currentTimeMillis() - t0);
 
-            List<SearchResult> results = store.search(queryVector, config.getRagTopK());
+            List<SearchResult> results = store.searchDefault(queryVector, config.getRagTopK());
             if (results.isEmpty()) {
                 log.info("RAG: pgvector search returned 0 results");
                 return "";
@@ -102,6 +119,53 @@ public class RagContextEnricher {
         return snippets;
     }
 
+    private String enrichWithHybridLocator(String userInput, long startedAt) {
+        if (hybridLocatorTool == null) {
+            return "";
+        }
+
+        try {
+            int topK = Math.max(1, config.getRagTopK());
+            List<HybridLocatorTool.LocatorResult> results = hybridLocatorTool.locateV2(
+                    userInput,
+                    topK,
+                    Math.max(topK * 4, topK),
+                    Math.max(topK, 5),
+                    Math.max(topK * 2, topK)
+            );
+            if (results.isEmpty()) {
+                log.info("RAG: hybrid locator v2 returned 0 results");
+                return "";
+            }
+
+            for (HybridLocatorTool.LocatorResult result : results) {
+                log.info("RAG: hybrid v2 candidate {} ({} | {} | {})",
+                        firstNonBlank(result.qualifiedName(), result.symbol(), result.file()),
+                        result.kind(),
+                        result.source(),
+                        result.score() == null ? "n/a" : String.format("%.3f", result.score()));
+            }
+
+            List<CodeSnippet> snippets = fetchCodeSnippetsFromLocator(results);
+            String ctx = formatContext(snippets);
+            log.info("RAG: hybrid v2 injecting {} chars of code context ({} candidates, {}ms total)",
+                    ctx.length(), snippets.size(), System.currentTimeMillis() - startedAt);
+            return ctx;
+        } catch (Exception e) {
+            log.info("RAG: hybrid locator v2 failed, falling back to vector search: {}", e.getMessage());
+            return "";
+        }
+    }
+
+    private List<CodeSnippet> fetchCodeSnippetsFromLocator(List<HybridLocatorTool.LocatorResult> results) {
+        List<CodeSnippet> snippets = new ArrayList<>();
+        for (HybridLocatorTool.LocatorResult result : results) {
+            CodeSnippet snippet = fetchCode(result);
+            if (snippet != null) snippets.add(snippet);
+        }
+        return snippets;
+    }
+
     private CodeSnippet fetchCode(SearchResult result) {
         long t = System.currentTimeMillis();
         String code;
@@ -133,7 +197,34 @@ public class RagContextEnricher {
      * 通过 GitNexus MCP context --uid 获取符号的 startLine/endLine，
      * 然后从本地文件按行切片返回精准代码块。语言无关。
      */
+    private CodeSnippet fetchCode(HybridLocatorTool.LocatorResult result) {
+        long t = System.currentTimeMillis();
+        String identity = firstNonBlank(result.qualifiedName(), result.symbol(), result.file());
+        String code = fetchViaMcpSliced(identity);
+        if (code == null && result.symbol() != null && !result.symbol().equals(identity)) {
+            code = fetchViaMcpSliced(result.symbol());
+        }
+        if (code != null) {
+            log.info("RAG: [{}] via hybrid locator + MCP line slicing ({}ms, source {})",
+                    identity, System.currentTimeMillis() - t, result.source());
+            return new CodeSnippet(identity, result.file(), result.kind(), safeScore(result.score()), code);
+        }
+
+        code = readFile(result.file());
+        if (code != null) {
+            log.info("RAG: [{}] via hybrid locator filesystem fallback (source {})",
+                    identity, result.source());
+            return new CodeSnippet(identity, result.file(), result.kind(), safeScore(result.score()), code);
+        }
+
+        log.info("RAG: [{}] hybrid locator candidate had no readable code", identity);
+        return null;
+    }
+
     private String fetchViaMcpSliced(String uid) {
+        if (uid == null || uid.isBlank() || mcpService == null || gitNexusServer == null || gitNexusServer.isBlank()) {
+            return null;
+        }
         try {
             Map<String, Object> args = new LinkedHashMap<>();
             args.put("uid", uid);
@@ -224,6 +315,9 @@ public class RagContextEnricher {
     }
 
     private String readFile(String filePath) {
+        if (filePath == null || filePath.isBlank()) {
+            return null;
+        }
         try {
             Path resolved = workspaceRoot.resolve(filePath).toAbsolutePath().normalize();
             if (Files.exists(resolved)) return Files.readString(resolved);
@@ -267,6 +361,18 @@ public class RagContextEnricher {
     private Map<String, Object> asMap(Object value) {
         if (value instanceof Map<?, ?> map) return castMap(map);
         return Collections.emptyMap();
+    }
+
+    private double safeScore(Double score) {
+        return score == null ? 0.0 : score;
+    }
+
+    private String firstNonBlank(String... values) {
+        if (values == null) return null;
+        for (String value : values) {
+            if (value != null && !value.isBlank()) return value;
+        }
+        return null;
     }
 
     // ---- formatting ----

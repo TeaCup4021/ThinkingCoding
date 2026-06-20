@@ -17,6 +17,7 @@ import com.thinkingcoding.tools.exec.CommandExecutorTool;
 import com.thinkingcoding.tools.file.FileManagerTool;
 import com.thinkingcoding.tools.rag.CodeGraphTool;
 import com.thinkingcoding.tools.rag.GraphSearchTool;
+import com.thinkingcoding.tools.rag.HybridLocatorTool;
 import com.thinkingcoding.tools.rag.SemanticSearchTool;
 import com.thinkingcoding.rag.embedding.EmbeddingService;
 import com.thinkingcoding.rag.embedding.GraphEmbeddingStore;
@@ -114,6 +115,8 @@ public class ThinkingCodingContext {
         }
 
         toolRegistry.register(new AgentTodoTool());
+        toolRegistry.register(new com.thinkingcoding.tools.memory.RememberTool(
+                new com.thinkingcoding.service.memory.FactStore()));
 
         GitNexusStalenessChecker stalenessChecker = createStalenessChecker(appConfig);
 
@@ -129,6 +132,7 @@ public class ThinkingCodingContext {
         EmbeddingService embeddingService = null;
         GraphEmbeddingStore graphEmbeddingStore = null;
         GraphEmbeddingIndexer graphEmbeddingIndexer = null;
+        HybridLocatorTool hybridLocatorTool = null;
 
         if (appConfig.getRag() != null && appConfig.getRag().isEnabled()
                 && appConfig.getRag().getPgvector() != null) {
@@ -140,7 +144,25 @@ public class ThinkingCodingContext {
 
                 if (baseUrl != null && !baseUrl.isBlank() && apiKey != null && !apiKey.isBlank()) {
                     embeddingService = new EmbeddingService(baseUrl, apiKey, modelName);
-                    graphEmbeddingStore = new GraphEmbeddingStore(appConfig.getRag().getPgvector(), 3072);
+                    int configuredDimensions = resolveConfiguredEmbeddingDimensions(appConfig);
+                    GraphEmbeddingStore dimensionProbe = new GraphEmbeddingStore(
+                            appConfig.getRag().getPgvector(),
+                            configuredDimensions,
+                            appConfig.getRag().getVectorIndex(),
+                            appConfig.getRag().getHnswM(),
+                            appConfig.getRag().getHnswEfConstruction(),
+                            appConfig.getRag().getHnswEfSearch()
+                    );
+                    Integer existingDimensions = dimensionProbe.readExistingDimensions();
+                    int resolvedDimensions = existingDimensions != null ? existingDimensions : configuredDimensions;
+                    graphEmbeddingStore = new GraphEmbeddingStore(
+                            appConfig.getRag().getPgvector(),
+                            resolvedDimensions,
+                            appConfig.getRag().getVectorIndex(),
+                            appConfig.getRag().getHnswM(),
+                            appConfig.getRag().getHnswEfConstruction(),
+                            appConfig.getRag().getHnswEfSearch()
+                    );
                     graphEmbeddingStore.ensureTable();
 
                     graphEmbeddingIndexer = new GraphEmbeddingIndexer(
@@ -156,6 +178,14 @@ public class ThinkingCodingContext {
 
                     // 注册 graph_search 工具
                     toolRegistry.register(new GraphSearchTool(appConfig, graphEmbeddingStore, embeddingService));
+                    hybridLocatorTool = new HybridLocatorTool(
+                            appConfig,
+                            graphEmbeddingStore,
+                            embeddingService,
+                            mcpService,
+                            stalenessChecker
+                    );
+                    toolRegistry.register(hybridLocatorTool);
 
                     System.out.println("✅ 图谱嵌入组件初始化成功 (model: " + modelName + ")");
 
@@ -207,7 +237,8 @@ public class ThinkingCodingContext {
                     java.nio.file.Path.of(appConfig.getRag().getWorkspace() != null
                             ? appConfig.getRag().getWorkspace()
                             : System.getProperty("user.dir")),
-                    appConfig.getRag()
+                    appConfig.getRag(),
+                    hybridLocatorTool
             );
             System.out.println("✅ RAG 上下文增强器初始化成功 (topK="
                     + appConfig.getRag().getRagTopK() + ")");
@@ -316,6 +347,13 @@ public class ThinkingCodingContext {
         } catch (Exception ignored) {
             return null;
         }
+    }
+
+    private static int resolveConfiguredEmbeddingDimensions(AppConfig appConfig) {
+        if (appConfig != null && appConfig.getRag() != null && appConfig.getRag().getDimensions() > 0) {
+            return appConfig.getRag().getDimensions();
+        }
+        return 1024;
     }
 
     private static GitNexusStalenessChecker createStalenessChecker(AppConfig appConfig) {

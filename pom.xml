@@ -27,6 +27,7 @@
     <okhttp.version>4.12.0</okhttp.version>
     <slf4j.version>2.0.9</slf4j.version>
     <junit.version>5.10.1</junit.version>
+    <djl.version>0.33.0</djl.version>
   </properties>
 
   <repositories>
@@ -152,6 +153,13 @@
       <groupId>com.jcraft</groupId>
       <artifactId>jsch</artifactId>
       <version>0.1.55</version>
+    </dependency>
+
+    <!-- DeepSeek 精确 token 计数：DJL HuggingFace tokenizers 绑定 -->
+    <dependency>
+      <groupId>ai.djl.huggingface</groupId>
+      <artifactId>tokenizers</artifactId>
+      <version>${djl.version}</version>
     </dependency>
   </dependencies>
 

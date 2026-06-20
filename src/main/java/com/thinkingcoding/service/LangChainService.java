@@ -6,6 +6,8 @@ import com.thinkingcoding.config.AppConfig;
 import com.thinkingcoding.model.ChatMessage;
 import com.thinkingcoding.model.ToolCall;
 import com.thinkingcoding.rag.retrieval.RagContextEnricher;
+import com.thinkingcoding.rag.retrieval.RagRouter;
+import com.thinkingcoding.rag.retrieval.RagRoutingDecision;
 import com.thinkingcoding.tools.BaseTool;
 import com.thinkingcoding.tools.ToolRegistry;
 import dev.langchain4j.agent.tool.ToolExecutionRequest;
@@ -54,6 +56,9 @@ public class LangChainService implements AIService {
     private final ToolRegistry toolRegistry;
     private final ContextManager contextManager;
     private final RagContextEnricher ragEnricher;
+    private final RagRouter ragRouter;
+    private final com.thinkingcoding.service.memory.FactStore factStore =
+            new com.thinkingcoding.service.memory.FactStore();
     private Consumer<ChatMessage> messageHandler;
     private Consumer<ToolCall> toolCallHandler;
     private StreamingChatModel streamingChatModel;
@@ -63,10 +68,16 @@ public class LangChainService implements AIService {
 
     public LangChainService(AppConfig appConfig, ToolRegistry toolRegistry,
                             ContextManager contextManager, RagContextEnricher ragEnricher) {
+        this(appConfig, toolRegistry, contextManager, ragEnricher, ragEnricher != null ? new RagRouter(appConfig) : null);
+    }
+
+    public LangChainService(AppConfig appConfig, ToolRegistry toolRegistry,
+                            ContextManager contextManager, RagContextEnricher ragEnricher, RagRouter ragRouter) {
         this.appConfig = appConfig;
         this.toolRegistry = toolRegistry;
         this.contextManager = contextManager;
         this.ragEnricher = ragEnricher;
+        this.ragRouter = ragRouter;
         initializeChatModel();
     }
 
@@ -545,35 +556,41 @@ public class LangChainService implements AIService {
     private List<dev.langchain4j.data.message.ChatMessage> prepareMessages(String input, List<ChatMessage> history) {
         List<dev.langchain4j.data.message.ChatMessage> messages = new ArrayList<>();
 
+        // 累计固定段 token，用于从工作记忆预算中扣除（系统提示 + RAG + 当前上下文 + 本轮输入）
+        int fixedTokens = 0;
+
         // === Part 1: System Message — 角色定义、行为规范、Skills ===
         if (contextManager != null) {
             ChatMessage systemMsg = contextManager.buildProjectContextMessage();
             if (systemMsg != null) {
                 messages.add(dev.langchain4j.data.message.SystemMessage.from(systemMsg.getContent()));
+                fixedTokens += contextManager.estimateTokens(systemMsg.getContent());
             }
         }
 
         // === Part 1.5: RAG Code Context — 从代码库检索到的相关代码 ===
         if (ragEnricher != null && ragEnricher.isEnabled()) {
             try {
-                String ragContext = ragEnricher.enrich(input);
-                if (ragContext != null && !ragContext.isBlank()) {
-                    messages.add(dev.langchain4j.data.message.SystemMessage.from(ragContext));
+                RagRoutingDecision decision = ragRouter != null
+                        ? ragRouter.route(input)
+                        : RagRoutingDecision.use(input, "router unavailable");
+                if (decision.useRag()) {
+                    String ragContext = ragEnricher.enrich(decision.queryOrOriginal(input));
+                    if (ragContext != null && !ragContext.isBlank()) {
+                        messages.add(dev.langchain4j.data.message.SystemMessage.from(ragContext));
+                        if (contextManager != null) {
+                            fixedTokens += contextManager.estimateTokens(ragContext);
+                        }
+                    }
+                } else {
+                    log.debug("RAG skipped: {}", decision.reason());
                 }
             } catch (Exception e) {
                 log.warn("RAG enrichment failed silently: {}", e.getMessage());
             }
         }
 
-        // === Part 2: History Messages — User/Assistant/System 角色，经压缩管理 ===
-        if (contextManager != null && history != null && !history.isEmpty()) {
-            List<ChatMessage> managedHistory = contextManager.getContextForAI(history);
-            if (managedHistory != null && !managedHistory.isEmpty()) {
-                messages.addAll(convertToLangChainHistory(managedHistory));
-            }
-        }
-
-        // === Part 3: Current Context — 拼接到最新 UserMessage ===
+        // === Part 3 预算计算: Current Context + 本轮输入 也属于固定段 ===
         String augmentedInput = input;
         if (contextManager != null) {
             String currentContext = contextManager.buildCurrentContext(toolRegistry.getAllTools());
@@ -581,9 +598,64 @@ public class LangChainService implements AIService {
                 augmentedInput = input + currentContext;
             }
         }
+        if (contextManager != null) {
+            fixedTokens += contextManager.estimateTokens(augmentedInput);
+        }
+
+        // === Part 1.7: 语义事实文件 — 贯穿会话的稳定事实，固定段，永不截断 ===
+        if (contextManager != null) {
+            String sessionId = resolveSessionId(history);
+            String facts = factStore.read(sessionId);
+            if (facts != null && !facts.isBlank()) {
+                String factsBlock = "## 📌 会话事实（持续有效，请遵循）\n\n" + facts;
+                messages.add(dev.langchain4j.data.message.SystemMessage.from(factsBlock));
+                fixedTokens += contextManager.estimateTokens(factsBlock);
+            }
+        }
+
+        // === Part 2: History Messages — 在扣除固定段后的预算内构建工作记忆窗口 ===
+        if (contextManager != null && history != null && !history.isEmpty()) {
+            int budget = Math.max(0, contextManager.getCompressionThreshold() - fixedTokens);
+            List<ChatMessage> managedHistory =
+                    contextManager.getContextForAI(buildHistoryForPrompt(history, input), budget);
+            if (managedHistory != null && !managedHistory.isEmpty()) {
+                messages.addAll(convertToLangChainHistory(managedHistory));
+            }
+        }
+
+        // === Part 3: Current Context — 拼接到最新 UserMessage ===
         messages.add(dev.langchain4j.data.message.UserMessage.from(augmentedInput));
 
         return messages;
+    }
+
+    /** 从历史消息中解析 sessionId（用于读取事实文件）。 */
+    private String resolveSessionId(List<ChatMessage> history) {
+        if (history == null) {
+            return null;
+        }
+        for (ChatMessage msg : history) {
+            if (msg != null && msg.getSessionId() != null && !msg.getSessionId().isBlank()) {
+                return msg.getSessionId();
+            }
+        }
+        return null;
+    }
+
+    private List<ChatMessage> buildHistoryForPrompt(List<ChatMessage> history, String input) {
+        if (history == null || history.isEmpty()) {
+            return Collections.emptyList();
+        }
+
+        List<ChatMessage> promptHistory = new ArrayList<>(history);
+        ChatMessage lastMessage = promptHistory.get(promptHistory.size() - 1);
+        if (lastMessage != null
+                && "user".equals(lastMessage.getRole())
+                && input != null
+                && input.equals(lastMessage.getContent())) {
+            promptHistory.remove(promptHistory.size() - 1);
+        }
+        return promptHistory;
     }
 
     private List<dev.langchain4j.data.message.ChatMessage> convertToLangChainHistory(List<ChatMessage> history) {

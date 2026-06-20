@@ -476,6 +476,18 @@ public class AppConfig {
         @JsonProperty("ragMinSimilarity")
         private double ragMinSimilarity = 0.5;
 
+        @JsonProperty("vectorIndex")
+        private String vectorIndex = "hnsw";
+
+        @JsonProperty("hnswM")
+        private int hnswM = 16;
+
+        @JsonProperty("hnswEfConstruction")
+        private int hnswEfConstruction = 64;
+
+        @JsonProperty("hnswEfSearch")
+        private int hnswEfSearch = 40;
+
         @JsonProperty("pgvector")
         private PgVectorConfig pgvector = new PgVectorConfig();
 
@@ -551,6 +563,18 @@ public class AppConfig {
 
         public double getRagMinSimilarity() { return ragMinSimilarity; }
         public void setRagMinSimilarity(double ragMinSimilarity) { this.ragMinSimilarity = ragMinSimilarity; }
+
+        public String getVectorIndex() { return vectorIndex; }
+        public void setVectorIndex(String vectorIndex) { this.vectorIndex = vectorIndex; }
+
+        public int getHnswM() { return hnswM; }
+        public void setHnswM(int hnswM) { this.hnswM = hnswM; }
+
+        public int getHnswEfConstruction() { return hnswEfConstruction; }
+        public void setHnswEfConstruction(int hnswEfConstruction) { this.hnswEfConstruction = hnswEfConstruction; }
+
+        public int getHnswEfSearch() { return hnswEfSearch; }
+        public void setHnswEfSearch(int hnswEfSearch) { this.hnswEfSearch = hnswEfSearch; }
 
         public String getBaseUrl() { return baseUrl; }
         public void setBaseUrl(String baseUrl) { this.baseUrl = baseUrl; }

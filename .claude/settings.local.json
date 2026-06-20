@@ -4,7 +4,28 @@
       "Bash(mvn compile *)",
       "Bash(npx gitnexus *)",
       "Bash(mvn test *)",
-      "Bash(git log *)"
+      "Bash(git log *)",
+      "Bash(grep -iA30 \"rag:\")",
+      "Bash(grep -iA35 \"^rag:\\\\|^ rag:\\\\| rag:\" src/main/resources/config.yaml)",
+      "Bash(PGPASSWORD='17392812412ze' psql -h localhost -p 5432 -U postgres -d thinkingcoding -c \"SELECT vector_dims\\(vector\\) AS dims, count\\(*\\) FROM graph_embeddings GROUP BY 1;\")",
+      "Bash(PGPASSWORD='17392812412ze' psql -h localhost -p 5432 -U postgres -d thinkingcoding -c \"SELECT format_type\\(a.atttypid, a.atttypmod\\) AS col_type FROM pg_attribute a WHERE a.attrelid = 'graph_embeddings'::regclass AND a.attname = 'vector';\")",
+      "Bash(PGPASSWORD='17392812412ze' psql -h localhost -p 5432 -U postgres -d thinkingcoding -c \"SELECT indexname, indexdef FROM pg_indexes WHERE tablename = 'graph_embeddings';\")",
+      "WebFetch(domain:www.mindstudio.ai)",
+      "WebFetch(domain:claudecn.com)",
+      "WebFetch(domain:finisky.github.io)",
+      "WebFetch(domain:central.sonatype.com)",
+      "WebSearch",
+      "Bash(mvn -q dependency:resolve -Dsilent=true)",
+      "WebFetch(domain:docs.djl.ai)",
+      "Bash(mvn -q compile)",
+      "Bash(mvn -q test -Dtest=DeepSeekTokenCounterTest)",
+      "Bash(mvn -q test -Dtest=WorkingMemoryTest)",
+      "Bash(mvn -q test-compile)",
+      "Bash(mvn test-compile *)",
+      "Bash(iconv -f GBK -t UTF-8)",
+      "Bash(git stash *)",
+      "Bash(mvn -q clean package -DskipTests)",
+      "Bash(unzip -l target/thinkingcoding.jar)"
     ]
   }
 }
