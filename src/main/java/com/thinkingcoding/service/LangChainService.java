@@ -575,7 +575,7 @@ public class LangChainService implements AIService {
                         ? ragRouter.route(input)
                         : RagRoutingDecision.use(input, "router unavailable");
                 if (decision.useRag()) {
-                    String ragContext = ragEnricher.enrich(decision.queryOrOriginal(input));
+                    String ragContext = ragEnricher.enrich(input, decision.rewrittenQuery());
                     if (ragContext != null && !ragContext.isBlank()) {
                         messages.add(dev.langchain4j.data.message.SystemMessage.from(ragContext));
                         if (contextManager != null) {

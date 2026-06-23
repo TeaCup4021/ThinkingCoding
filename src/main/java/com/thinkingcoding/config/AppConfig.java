@@ -476,6 +476,12 @@ public class AppConfig {
         @JsonProperty("ragMinSimilarity")
         private double ragMinSimilarity = 0.5;
 
+        @JsonProperty("ragDualQueryEnabled")
+        private boolean ragDualQueryEnabled = true;
+
+        @JsonProperty("ragQueryDivergenceThreshold")
+        private double ragQueryDivergenceThreshold = 0.6;
+
         @JsonProperty("vectorIndex")
         private String vectorIndex = "hnsw";
 
@@ -563,6 +569,12 @@ public class AppConfig {
 
         public double getRagMinSimilarity() { return ragMinSimilarity; }
         public void setRagMinSimilarity(double ragMinSimilarity) { this.ragMinSimilarity = ragMinSimilarity; }
+
+        public boolean isRagDualQueryEnabled() { return ragDualQueryEnabled; }
+        public void setRagDualQueryEnabled(boolean ragDualQueryEnabled) { this.ragDualQueryEnabled = ragDualQueryEnabled; }
+
+        public double getRagQueryDivergenceThreshold() { return ragQueryDivergenceThreshold; }
+        public void setRagQueryDivergenceThreshold(double ragQueryDivergenceThreshold) { this.ragQueryDivergenceThreshold = ragQueryDivergenceThreshold; }
 
         public String getVectorIndex() { return vectorIndex; }
         public void setVectorIndex(String vectorIndex) { this.vectorIndex = vectorIndex; }

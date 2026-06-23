@@ -25,7 +25,9 @@
       "Bash(iconv -f GBK -t UTF-8)",
       "Bash(git stash *)",
       "Bash(mvn -q clean package -DskipTests)",
-      "Bash(unzip -l target/thinkingcoding.jar)"
+      "Bash(unzip -l target/thinkingcoding.jar)",
+      "Bash(mvn -q -DskipTests compile)",
+      "Bash(mvn -q test -Dtest='RagContextEnricherTest,LangChainServiceRagRoutingTest,HybridLocatorToolTest,EmbeddingServiceTest')"
     ]
   }
 }

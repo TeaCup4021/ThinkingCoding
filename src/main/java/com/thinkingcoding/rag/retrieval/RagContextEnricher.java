@@ -67,15 +67,30 @@ public class RagContextEnricher {
     }
 
     public String enrich(String userInput) {
-        if (userInput == null || userInput.isBlank()) return "";
+        return enrich(userInput, null);
+    }
+
+    /**
+     * 双查询融合 + 分歧检测。
+     * 当改写查询忠实于原始意图（cosine ≥ 阈值）时只用改写查询；
+     * 当改写发生意图漂移（cosine < 阈值）或无法判定时，同时检索原始 + 改写查询并融合，
+     * 由原始查询为错误改写兜底。
+     *
+     * @param originalInput 用户原始问题
+     * @param rewrittenInput 路由器改写后的查询，可为 null/空（此时退化为单查询）
+     */
+    public String enrich(String originalInput, String rewrittenInput) {
+        List<String> queries = resolveQueries(originalInput, rewrittenInput);
+        if (queries.isEmpty()) return "";
+        String primary = queries.get(0);
 
         try {
             long t0 = System.currentTimeMillis();
-            String hybridContext = enrichWithHybridLocator(userInput, t0);
+            String hybridContext = enrichWithHybridLocator(queries, t0);
             if (!hybridContext.isBlank()) {
                 return hybridContext;
             }
-            float[] queryVector = embeddingService.embed(userInput);
+            float[] queryVector = embeddingService.embed(primary);
             log.info("RAG: embedded question → {}d vector ({}ms)",
                     queryVector.length, System.currentTimeMillis() - t0);
 
@@ -110,6 +125,51 @@ public class RagContextEnricher {
         }
     }
 
+    /**
+     * 根据原始查询与改写查询决定实际检索的查询集合。
+     * <ul>
+     *   <li>无改写 / 改写与原文相同 → 单查询</li>
+     *   <li>双查询关闭 → 信任改写（沿用旧行为）</li>
+     *   <li>cosine ≥ 阈值（忠实扩展）→ 仅用改写</li>
+     *   <li>cosine &lt; 阈值（漂移）或无法判定 → 融合 [原始, 改写]</li>
+     * </ul>
+     */
+    private List<String> resolveQueries(String originalInput, String rewrittenInput) {
+        String original = originalInput == null ? "" : originalInput.trim();
+        String rewritten = rewrittenInput == null ? "" : rewrittenInput.trim();
+
+        if (rewritten.isEmpty() || rewritten.equalsIgnoreCase(original)) {
+            String only = !original.isEmpty() ? original : rewritten;
+            return only.isEmpty() ? List.of() : List.of(only);
+        }
+        if (original.isEmpty()) {
+            return List.of(rewritten);
+        }
+        if (config == null || !config.isRagDualQueryEnabled()) {
+            return List.of(rewritten);
+        }
+
+        double threshold = config.getRagQueryDivergenceThreshold();
+        try {
+            float[][] vectors = embeddingService.embedBatch(List.of(original, rewritten));
+            if (vectors.length >= 2) {
+                double sim = EmbeddingService.cosineSimilarity(vectors[0], vectors[1]);
+                if (sim >= threshold) {
+                    log.info("RAG: rewrite faithful (cosine {} >= {}), using rewritten query only",
+                            String.format("%.3f", sim), threshold);
+                    return List.of(rewritten);
+                }
+                log.info("RAG: rewrite diverged (cosine {} < {}), fusing original + rewritten queries",
+                        String.format("%.3f", sim), threshold);
+                return List.of(original, rewritten);
+            }
+        } catch (Exception e) {
+            log.info("RAG: divergence detection failed ({}), fusing original + rewritten as fallback",
+                    e.getMessage());
+        }
+        return List.of(original, rewritten);
+    }
+
     private List<CodeSnippet> fetchCodeSnippets(List<SearchResult> results) {
         List<CodeSnippet> snippets = new ArrayList<>();
         for (SearchResult result : results) {
@@ -119,7 +179,7 @@ public class RagContextEnricher {
         return snippets;
     }
 
-    private String enrichWithHybridLocator(String userInput, long startedAt) {
+    private String enrichWithHybridLocator(List<String> queries, long startedAt) {
         if (hybridLocatorTool == null) {
             return "";
         }
@@ -127,7 +187,7 @@ public class RagContextEnricher {
         try {
             int topK = Math.max(1, config.getRagTopK());
             List<HybridLocatorTool.LocatorResult> results = hybridLocatorTool.locateV2(
-                    userInput,
+                    queries,
                     topK,
                     Math.max(topK * 4, topK),
                     Math.max(topK, 5),
